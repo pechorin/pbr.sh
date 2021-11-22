@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+
+# TUI text color helpers
+function echo_ok() { echo -e '\033[1;32m'"$1"'\033[0m'; }
+function echo_err() { echo -e '\033[1;31mERROR: '"$1"'\033[0m'; }
+function echo_warn() { echo -e '\033[1;33m'"$1"'\033[0m'; }
+
+# TODO:
+# - set umask to 077
+# - load docker daemon config
+# - add option to disable root login after setup
+# - if no backup targets provided - ignore copying
+
+# ------------ Provisioning prerequirements check ------------
+
+echo_ok "Starting pbr.sh"
+echo_warn "Checking configuration"
+
+script_dir=$(dirname $0)
+secrets_dir="$script_dir/secrets"
+config_path="$script_dir/secrets/settings.conf"
+
+# Check secrets directory
+test -d "$secrets_dir" || { echo_err "$secrets_dir directory not found" && exit 1; }
+
+# Check and load configuration file
+test -f "$config_path" || \
+  { echo_err "Config file missing at path: $config_path" && exit 1; }
+
+source "$config_path"
+
+# check all required variables defined in configuration file
+required_variables=(remote_user ssh_connection_string)
+
+for var in "${required_variables[@]}"; do
+  test -n "${!var}" || { echo_err "$var not defined in $config_path" && exit 1; }
+done
+
+# check for all required server configuration files are present
+sshd_config_path="${script_dir}/server_configs/sshd_config"
+test -f "$sshd_config_path" || { echo_err "$sshd_config_path missing" && exit 1; }
+
+dockerd_config_path="${script_dir}/server_configs/docker/daemon.json"
+test -f "$dockerd_config_path" || { echo_err "$dockerd_config_path missing" && exit 1; }
+
+# check backup script
+backup_script_path="${script_dir}/backup"
+test -f "$backup_script_path" || { echo_err "$backup_script_path missing" && exit 1; }
+
+# check local user public key
+local_public_key_path=${local_public_key_path:-~/.ssh/id_rsa.pub}
+test -f "${local_public_key_path}" || \
+  { echo_err "local user public key not found at $local_public_key_path" && exit 1; }
+
+# check local user rclone config
+local_rclone_config_path=${local_rclone_config_path:-~/.config/rclone/rclone.conf}
+test -f "${local_rclone_config_path}" || \
+  { echo_err "local user rclone config not found at $local_rclone_config_path" && exit 1; }
+
+# test connection to remote host via ssh
+ssh -q "$ssh_connection_string" exit
+test $? -eq 0 || { echo_err "Connection to remote via ssh $ssh_connection_string failed" && exit 1; }
+
+
+# ------------ Backup prerequirements check ------------
+
+if test -n "$backup_name"; then
+  # check volumes setting
+  (test -n "$backup_docker_volumes" && test -z "$volumes_rclone_repo") && {
+    echo_err "backup_docker_volumes defined, but volumes_rclone_repo isn't" && exit 1; }
+
+  # check docker mysql settings
+  if test -n "$docker_mysql_db_names"; then
+
+    test -z "$db_rclone_repo" && {
+      echo_err "docker_mysql_db_names defined, but db_rclone_repo isn't" && exit 1; }
+
+    test -z "$docker_mysql_user" && { echo_err "docker_mysql_user not defined" && exit 1; }
+    test -z "$docker_mysql_password" && { echo_err "docker_mysql_password not defined" && exit 1; }
+  fi
+
+  # check host postgresql settings
+  if test -n "$host_postgresql_db_names"; then
+
+    test -z "$db_rclone_repo" && {
+      echo_err "host_postgresql_db_names defined, but db_rclone_repo isn't" && exit 1; }
+
+    test -z "$host_postgresql_user" && { echo_err "host_postgresql_user not defined" && exit 1; }
+    test -z "$host_postgresql_password" && { echo_err "host_postgresql_password not defined" && exit 1; }
+  fi
+
+  backup_enabled=1
+  echo_ok "Backups enabled"
+else
+  backup_enabled=0
+  echo_err "Backups disabled, you can enable it via backup_name setting in $config_path"
+fi
+
+# If not all telegram settings defined -> ignore but warn, this is optional
+(test -n "$telegram_chat_id" && test -n "$telegram_bot_token") || {
+  echo_err "Telegram notifications disabled, please define telegram_chat_id and telegram_bot_token in $config_path";
+}
+
+echo_ok "Checking complete"
+
+
+# ------------ Provisioning ------------
+
+if [ -z "$remote_user_password" ]; then
+  # Ask for remote user password
+  read -s -p "Enter remote user password: " remote_user_password
+fi
+
+# Copy all configs and scripts to remote
+scp "$backup_script_path"       \
+    "$sshd_config_path"         \
+    "$dockerd_config_path"      \
+    "$local_public_key_path"    \
+    "$local_rclone_config_path" \
+    "$ssh_connection_string:."
+
+scp -r "$secrets_dir" "$ssh_connection_string:.secrets"
+
+# Copy password via ssh to remote host
+# on remote host get password from stdin and write it to file with limited permissions
+echo $remote_user_password | \
+  ssh $ssh_connection_string 'cat > remote_user_password && chmod 500 remote_user_password'
+
+# Run setup on remote host
+ssh "$ssh_connection_string" /bin/bash -e <<- STR
+  # update distro and setup required toolset
+  apt-get update
+  apt-get --yes --force-yes upgrade
+  apt-get --yes --force-yes install rclone restic docker.io neovim
+
+  # Создаем нашего пользователя
+  if useradd -m -U $remote_user; then
+    usermod -v 1000-1000 -w 1000-1000 $remote_user
+
+    tac /etc/subuid > ./temp_subuid
+    cat ./temp_subuid > /etc/subuid
+
+    tac /etc/subgid > ./temp_subgid
+    cat ./temp_subgid > /etc/subgid
+
+    rm -f ./temp_subuid ./temp_subgid
+  fi
+
+  # Добавляем в группу докера и устанавливаем пароль (перед этим хэшируем его)
+  hashed_password=\$(openssl passwd -6 \$(cat ./remote_user_password))
+  usermod -a -G docker -p \$hashed_password -s /bin/bash $remote_user
+
+  # Удаляем старые залитые конфиги
+  rm -rf /home/$remote_user/.ssh
+  rm -rf /home/$remote_user/.config
+
+  # Создаем пару ключей на хосте
+  su $remote_user -c "ssh-keygen -P \$(cat ./remote_user_password) -f ~/.ssh/id_rsa"
+
+  # Копируем наш локальный ключ в доверенные ключи на хосте
+  cat $(basename "$local_public_key_path") > /home/$remote_user/.ssh/authorized_keys
+
+  # Копируем конфиг rclone
+  su $remote_user -c 'mkdir -p ~/.config/rclone;'
+  mv $(basename "$local_rclone_config_path") /home/$remote_user/.config/rclone/
+
+  # Устанавливаем ограниченные права и владельца
+  chmod -R 500 /home/$remote_user/.config
+  chown -R $remote_user:$remote_user /home/$remote_user/.config
+
+  # cleanup
+  rm -f remote_user_password \
+        $(basename "$local_public_key_path") \
+        $(basename "$local_rclone_config_path")
+
+  # Раскидываем бэкап скрипт
+  chmod 500 ./backup
+  chown $remote_user:$remote_user ./backup
+  mv ./backup /home/$remote_user/
+
+  # Раскидываем серверные конфиги
+  mv ./sshd_config /etc/ssh/sshd_config
+  mv ./daemon.json /etc/docker/daemon.json
+
+  # Переносим сикреты в .config
+  chmod -R 500 ./.secrets
+  chown -R $remote_user:$remote_user ./.secrets
+  mv ./.secrets/ /home/$remote_user/.config/
+
+  # Добавляем бэкап в крон
+  echo "30 0 * * * /home/$remote_user/backup /home/$remote_user/.config/.secrets/" > cronfile
+  crontab -u $remote_user cronfile; rm -f cronfile
+
+  # Рестартим службы
+  service sshd restart
+  service docker restart
+
+  su $remote_user -c '~/backup'
+STR
+
