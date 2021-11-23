@@ -2,6 +2,8 @@
 
 # TODO:
 # - multiple backup repo targets
+# - echo to stdout for all backup/restore logs
+# - restore from local machine?
 
 set -e
 
@@ -9,6 +11,9 @@ echo "Running backup script"
 
 # TODO: or use value from $1 ?
 source ~/.config/.secrets/settings.conf
+
+# Markers for removing unnecessary lines from logs (for notifications)
+backup_log_start_pattern="using parent|start scan"
 
 # Check for required toolset
 test -n "$(command -v restic)" || { echo "restic missing" && exit 1; }
@@ -23,8 +28,21 @@ function init_backup_repository! {
   fi
 }
 
+# $1 -> bold title message
+# $2 -> log message
 function notify_to_telegram {
-  return 0
+  if [ -z "$1" ] || [ -z "$2" ] || [ -z "$telegram_bot_token" ] || [ -z "$telegram_chat_id" ]; then
+    return 1
+  fi
+
+  local text="<b>$1</b>\n$2"
+  local message_json="{\"chat_id\": $telegram_chat_id, \"text\": \"$text\", \"parse_mode\": \"html\", \"disable_notification\": true}"
+
+
+  curl -X POST \
+       -H 'Content-Type: application/json' \
+       -d "$message_json" \
+       https://api.telegram.org/bot${telegram_bot_token}/sendMessage
 }
 
 # Convert "a,b,c" volumes string to bash list
@@ -116,7 +134,10 @@ function do_volumes_backup! {
       bash -c \"$backup_command\"
   ")
 
-  printf "$backup_log\n"
+  # remove unnecessary data from telegram message and notify
+  filtered_log=$(echo "$backup_log" | sed -n -E -e "/$backup_log_start_pattern/,\$p")
+  notify_to_telegram "$backup_name volumes backup" "$filtered_log"
+  return 0
 }
 
 function do_volumes_restore! {
@@ -147,8 +168,13 @@ function do_volumes_restore! {
       done
   ")
 
+  # Count restored size and remove restore folder
+  restored_size=($(du -sh $restore_folder))
   rm -r $restore_folder
-  echo "Data restore complete"
+
+  notify_to_telegram "Restoring $backup_name volumes backup" "total size: ${restored_size[0]}"
+
+  return 0
 }
 
 function do_db_backup! {
@@ -160,6 +186,10 @@ function do_db_backup! {
 # Execution part
 if [ "$1" = "restore" ]; then
   do_volumes_restore!
+
+  echo -e "\nRestore complete"
 else
   do_volumes_backup!
+
+  echo -e "\nBackup complete"
 fi

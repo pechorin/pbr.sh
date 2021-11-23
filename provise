@@ -208,6 +208,6 @@ ssh "$ssh_connection_string" /bin/bash -e <<- STR
   service sshd restart
   service docker restart
 
-  su $remote_user -c '~/backup'
+  # su $remote_user -c '~/backup'
 STR
 
