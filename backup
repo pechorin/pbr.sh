@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+
+set -e
+
+echo "Running backup script"
+
+script_dir=$(dirname $0)
+config_path=~/.config/.secrets/settings.conf
+source $config_path
+
+# Check for required toolset
+test -n "$(command -v restic)" || { echo "restic missing" && exit 1; }
+test -n "$(command -v curl)"   || { echo "curl missing" && exit 1; }
+
+# $1 -> repository name
+function init_backup_repository! {
+  # if repo not exists
+  if ! restic --password-file=<(echo $backup_storage_password) --repo="$1" cat config > /dev/null; then
+    # then init new one
+    restic --password-file=<(echo $backup_storage_password) --repo="$1" init
+  fi
+}
+
+function do_volumes_backup! {
+  if [ -z "$backup_docker_volumes" ] && [ -z "$volumes_rclone_repo" ]; then
+    return 1
+  fi
+
+  init_backup_repository! "$volumes_rclone_repo"
+
+  OLD_IFS=$IFS; IFS=','
+
+  volumes=()
+  for v in $(echo "$backup_docker_volumes"); do
+    volume_name=$(echo "$v" | sed 's/ //g') # remove spaces around
+    volumes+=("$volume_name")
+  done
+
+  IFS=$OLD_IFS
+
+  volumes_arg=()
+  volumes_dir_list_arg=()
+
+  for v in "${volumes[@]}"; do
+    volumes_arg+=("-v")
+    volumes_arg+=("$v:/$v/:ro")
+    volumes_dir_list_arg+=("/$v")
+  done
+
+  backup_run_command="restic -v --password-file=<(echo \$backup_storage_password) --host=\$backup_name \
+                                --repo=\$volumes_rclone_repo backup ${volumes_dir_list_arg[@]}"
+
+  backup_log=$(docker run --rm --name "volumes_backup" \
+    ${volumes_arg[@]} \
+    -v "$(realpath ~/.config/rclone/rclone.conf):/root/.config/rclone/rclone.conf:ro" \
+    -v "$(realpath ~/.config/.secrets/settings.conf):/settings.conf:ro" \
+    alpine:latest /bin/ash -e -c "
+      apk update;
+      apk add rclone restic bash;
+
+      source ./settings.conf;
+      bash -c \"$backup_run_command\";
+  ")
+
+  printf "$backup_log\n"
+}
+
+function do_db_backup! {
+  if [ -z "$docker_mysql_db_names" ] && [ -z "$db_rclone_repo" ] && [ -z "$docker_mysql_user" ]; then
+    return 1
+  fi
+}
+
+do_volumes_backup!

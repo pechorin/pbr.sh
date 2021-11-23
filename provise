@@ -76,7 +76,9 @@ if test -n "$backup_name"; then
       echo_err "docker_mysql_db_names defined, but db_rclone_repo isn't" && exit 1; }
 
     test -z "$docker_mysql_user" && { echo_err "docker_mysql_user not defined" && exit 1; }
-    test -z "$docker_mysql_password" && { echo_err "docker_mysql_password not defined" && exit 1; }
+
+    # warn on empty password, do not fail
+    test -z "$docker_mysql_password" && { echo_warn "docker_mysql_password not defined"; }
   fi
 
   # check host postgresql settings
