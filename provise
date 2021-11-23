@@ -130,12 +130,21 @@ echo $remote_user_password | \
 
 # Run setup on remote host
 ssh "$ssh_connection_string" /bin/bash -e <<- STR
-  # update distro and setup required toolset
+  # Update distro and setup required toolset
   apt-get update
   apt-get --yes --force-yes upgrade
   apt-get --yes --force-yes install rclone restic docker.io neovim
 
-  # Создаем нашего пользователя
+  # Create our user on host machine:
+  # default uids mapping for linux namespaces will be kind of:
+  #
+  #   username:100000:65536
+  #
+  # we will map docker root to our host user via appending line
+  #
+  #   username:1000:1
+  #
+  # after what we will swap lines order, so 1000:1 will be first
   if useradd -m -U $remote_user; then
     usermod -v 1000-1000 -w 1000-1000 $remote_user
 
@@ -148,52 +157,53 @@ ssh "$ssh_connection_string" /bin/bash -e <<- STR
     rm -f ./temp_subuid ./temp_subgid
   fi
 
-  # Добавляем в группу докера и устанавливаем пароль (перед этим хэшируем его)
+  # Get password hash and set it
+  # also add our user to docker group
   hashed_password=\$(openssl passwd -6 \$(cat ./remote_user_password))
   usermod -a -G docker -p \$hashed_password -s /bin/bash $remote_user
 
-  # Удаляем старые залитые конфиги
+  # Remove previously added configs
   rm -rf /home/$remote_user/.ssh
   rm -rf /home/$remote_user/.config
 
-  # Создаем пару ключей на хосте
+  # Generate keys pair on host machine
   su $remote_user -c "ssh-keygen -P \$(cat ./remote_user_password) -f ~/.ssh/id_rsa"
 
-  # Копируем наш локальный ключ в доверенные ключи на хосте
+  # Copy our local public keys to host user authorized keys
   cat $(basename "$local_public_key_path") > /home/$remote_user/.ssh/authorized_keys
 
-  # Копируем конфиг rclone
+  # Copy rclone config to host user configs
   su $remote_user -c 'mkdir -p ~/.config/rclone;'
   mv $(basename "$local_rclone_config_path") /home/$remote_user/.config/rclone/
 
-  # Устанавливаем ограниченные права и владельца
+  # Set restiction access for .config folders
   chmod -R 500 /home/$remote_user/.config
   chown -R $remote_user:$remote_user /home/$remote_user/.config
 
-  # cleanup
+  # Cleanup
   rm -f remote_user_password \
         $(basename "$local_public_key_path") \
         $(basename "$local_rclone_config_path")
 
-  # Раскидываем бэкап скрипт
+  # Move backup script to host user home dir
   chmod 500 ./backup
   chown $remote_user:$remote_user ./backup
   mv ./backup /home/$remote_user/
 
-  # Раскидываем серверные конфиги
+  # Move server configs to specified paths
   mv ./sshd_config /etc/ssh/sshd_config
   mv ./daemon.json /etc/docker/daemon.json
 
-  # Переносим сикреты в .config
+  # Move secrets to user home dir and set restrictive access
   chmod -R 500 ./.secrets
   chown -R $remote_user:$remote_user ./.secrets
   mv ./.secrets/ /home/$remote_user/.config/
 
-  # Добавляем бэкап в крон
+  # Set backup script execution via cron
   echo "30 0 * * * /home/$remote_user/backup /home/$remote_user/.config/.secrets/" > cronfile
   crontab -u $remote_user cronfile; rm -f cronfile
 
-  # Рестартим службы
+  # Restart out services so new upload configs will be enabled
   service sshd restart
   service docker restart
 
