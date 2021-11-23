@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+# TODO:
+# - multiple backup repo targets
+
 set -e
 
 echo "Running backup script"
@@ -20,31 +23,82 @@ function init_backup_repository! {
   fi
 }
 
+function notify_to_telegram {
+  return 0
+}
+
+# Convert "a,b,c" volumes string to bash list
+volumes_string_to_list () {
+  [ -z "$1" ] && return 1;
+
+  local volumes=()
+
+  OLD_IFS="$IFS"; IFS=','
+  for v in $1; do
+    volume_name=$(echo "$v" | sed 's/ //g') # remove spaces around
+    volumes+=("$volume_name")
+  done
+  IFS="$OLD_IFS"
+
+  echo ${volumes[@]}
+  return 0
+}
+
+# Make directories argument list
+# convert "a,b" to
+#   /a /b
+#
+# if --with-path-glob-ending provided in $2 then convert to:
+#   /a/* /b/*
+volumes_string_to_mounted_dir_list () {
+  [ -z "$1" ] && return 1;
+
+  local dir_list=()
+  for v in $(volumes_string_to_list "$1"); do
+    if [ "$2" == "--with-path-glob-ending" ]; then
+      dir_list+=("/$v/*")
+    else
+      dir_list+=("/$v")
+    fi
+  done
+
+  echo ${dir_list[@]}
+  return 0
+}
+
+# Make docker volumes mount argument list
+# convert from "a,b" to
+#   -v a:/a/ -v b:/b/
+# if --readonly provided in $2 then convert to:
+#   -v a:/a/:ro -v b:/b/:ro
+volumes_string_to_docker_volumes_arg () {
+  [ -z "$1" ] && return 1;
+
+  local args_list=()
+  for v in $(volumes_string_to_list "$1"); do
+    args_list+=("-v")
+
+    if [ "$2" = "--readonly" ]; then
+      args_list+=("$v:/$v/:ro")
+    else
+      args_list+=("$v:/$v/")
+    fi
+  done
+
+  echo ${args_list[@]}
+  return 0
+}
+
 function do_volumes_backup! {
   [ -z "$backup_docker_volumes" ] && [ -z "$volumes_rclone_repo" ] && return 1;
 
   init_backup_repository! "$volumes_rclone_repo"
 
-  # Modife IFS and convert "a,b,c" volumes list to bash array
-  OLD_IFS=$IFS; IFS=','
-  volumes=()
-  for v in $(echo "$backup_docker_volumes"); do
-    volume_name=$(echo "$v" | sed 's/ //g') # remove spaces around
-    volumes+=("$volume_name")
-  done
-  IFS=$OLD_IFS
-
-  # Constuct arguments list
-  volumes_arg=()            # docker -v args list
-  volumes_dir_list_arg=()   # directories args list
-  for v in "${volumes[@]}"; do
-    volumes_arg+=("-v") && volumes_arg+=("$v:/$v/:ro")
-    volumes_dir_list_arg+=("/$v")
-  done
-
   # Bakcup command will run in container:
-  backup_run_command="restic -v --password-file=<(echo \$backup_storage_password) --host=\$backup_name \
-                                --repo=\$volumes_rclone_repo backup ${volumes_dir_list_arg[@]}"
+  backup_command="restic -v --password-file=<(echo \$backup_storage_password) \
+                            --host=\$backup_name \
+                            --repo=\$volumes_rclone_repo backup \
+                            $(volumes_string_to_mounted_dir_list $backup_docker_volumes)"
 
   # Run backup inside container
   # - mount backup volumes
@@ -53,13 +107,13 @@ function do_volumes_backup! {
   # - run backup inside alpine container, but use bash instead of ash internally
   #   because we need bash process substituion <() for safety providing password to processes
   backup_log=$(docker run --rm --name "volumes_backup" \
-    ${volumes_arg[@]} \
+    $(volumes_string_to_docker_volumes_arg $backup_docker_volumes --readonly) \
     -v "$(realpath ~/.config/rclone/rclone.conf):/root/.config/rclone/rclone.conf:ro" \
     -v "$(realpath ~/.config/.secrets/settings.conf):/settings.conf:ro" \
     alpine:latest /bin/ash -e -c "
-      apk update && apk add rclone restic bash;
-      source ./settings.conf;
-      bash -c \"$backup_run_command\";
+      apk update && apk add rclone restic bash
+      source ./settings.conf
+      bash -c \"$backup_command\"
   ")
 
   printf "$backup_log\n"
@@ -67,6 +121,34 @@ function do_volumes_backup! {
 
 function do_volumes_restore! {
   [ -z "$backup_docker_volumes" ] && [ -z "$volumes_rclone_repo" ] && return 1;
+
+  restore_folder="./restore"
+
+  [ -d $restore_folder ] && rm -r $restore_folder      # ensure no restore folder present
+  mkdir $restore_folder                                # create new one
+  restore_folder_abs_path=$(realpath $restore_folder)  # construct absolute path
+
+  # Make this configurable?
+  restic --password-file=<(echo $backup_storage_password) -v --repo="$volumes_rclone_repo" check
+
+  # Do restore on host folder
+  restic --password-file=<(echo $backup_storage_password) -v --repo="$volumes_rclone_repo" restore latest \
+         --target="$restore_folder_abs_path"
+
+
+  # Mount restore folder and docker volumes in container, and then do restoration
+  restore_log=$(docker run --rm --name "restore" \
+    $(volumes_string_to_docker_volumes_arg $backup_docker_volumes) \
+    -v "$restore_folder_abs_path:/restore/" \
+    alpine:latest /bin/ash -e -c "
+      rm -rf $(volumes_string_to_mounted_dir_list $backup_docker_volumes --with-path-glob-ending)
+      for v in $(volumes_string_to_list $backup_docker_volumes); do
+        cp -r /restore/\${v}/* /\${v}/
+      done
+  ")
+
+  rm -r $restore_folder
+  echo "Data restore complete"
 }
 
 function do_db_backup! {
@@ -75,4 +157,9 @@ function do_db_backup! {
   fi
 }
 
-do_volumes_backup!
+# Execution part
+if [ "$1" = "restore" ]; then
+  do_volumes_restore!
+else
+  do_volumes_backup!
+fi
