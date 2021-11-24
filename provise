@@ -89,7 +89,7 @@ if test -n "$backup_name"; then
       echo_err "host_postgresql_db_names defined, but db_rclone_repo isn't" && exit 1; }
 
     test -z "$host_postgresql_user" && { echo_err "host_postgresql_user not defined" && exit 1; }
-    test -z "$host_postgresql_password" && { echo_err "host_postgresql_password not defined" && exit 1; }
+    # test -z "$host_postgresql_password" && { echo_err "host_postgresql_password not defined" && exit 1; }
   fi
 
   backup_enabled=1

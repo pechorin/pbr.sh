@@ -4,6 +4,7 @@
 # - multiple backup repo targets
 # - echo to stdout for all backup/restore logs
 # - restore from local machine?
+# - протестировать когда функция упала, нужно нормально обработать эту ситуацию и уведомить в телегу
 
 set -e
 
@@ -32,7 +33,8 @@ function init_backup_repository! {
 # $2 -> log message
 function notify_to_telegram {
   if [ -z "$1" ] || [ -z "$2" ] || [ -z "$telegram_bot_token" ] || [ -z "$telegram_chat_id" ]; then
-    return 1
+    echo "skipping telegram notifications"
+    return 0
   fi
 
   local text="<b>$1</b>\n$2"
@@ -45,8 +47,10 @@ function notify_to_telegram {
        https://api.telegram.org/bot${telegram_bot_token}/sendMessage
 }
 
-# Convert "a,b,c" volumes string to bash list
-volumes_string_to_list () {
+# Convert "a,b" string to list
+# "a, b,c" => a b c
+# "a,   b" => a b
+split_by_comma () {
   [ -z "$1" ] && return 1;
 
   local volumes=()
@@ -72,7 +76,7 @@ volumes_string_to_mounted_dir_list () {
   [ -z "$1" ] && return 1;
 
   local dir_list=()
-  for v in $(volumes_string_to_list "$1"); do
+  for v in $(split_by_comma "$1"); do
     if [ "$2" == "--with-path-glob-ending" ]; then
       dir_list+=("/$v/*")
     else
@@ -93,7 +97,7 @@ volumes_string_to_docker_volumes_arg () {
   [ -z "$1" ] && return 1;
 
   local args_list=()
-  for v in $(volumes_string_to_list "$1"); do
+  for v in $(split_by_comma "$1"); do
     args_list+=("-v")
 
     if [ "$2" = "--readonly" ]; then
@@ -108,7 +112,10 @@ volumes_string_to_docker_volumes_arg () {
 }
 
 function do_volumes_backup! {
-  [ -z "$backup_docker_volumes" ] && [ -z "$volumes_rclone_repo" ] && return 1;
+  if [ -z "$backup_docker_volumes" ] && [ -z "$volumes_rclone_repo" ]; then
+    echo "Skipping volumes backup"
+    return 0
+  fi
 
   init_backup_repository! "$volumes_rclone_repo"
 
@@ -137,11 +144,15 @@ function do_volumes_backup! {
   # remove unnecessary data from telegram message and notify
   filtered_log=$(echo "$backup_log" | sed -n -E -e "/$backup_log_start_pattern/,\$p")
   notify_to_telegram "$backup_name volumes backup" "$filtered_log"
+
   return 0
 }
 
 function do_volumes_restore! {
-  [ -z "$backup_docker_volumes" ] && [ -z "$volumes_rclone_repo" ] && return 1;
+  if [ -z "$backup_docker_volumes" ] && [ -z "$volumes_rclone_repo" ]; then
+    echo "Skipping docker volumes restore"
+    return 0
+  fi
 
   restore_folder="./restore"
 
@@ -163,7 +174,7 @@ function do_volumes_restore! {
     -v "$restore_folder_abs_path:/restore/" \
     alpine:latest /bin/ash -e -c "
       rm -rf $(volumes_string_to_mounted_dir_list $backup_docker_volumes --with-path-glob-ending)
-      for v in $(volumes_string_to_list $backup_docker_volumes); do
+      for v in $(split_by_comma $backup_docker_volumes); do
         cp -r /restore/\${v}/* /\${v}/
       done
   ")
@@ -178,9 +189,66 @@ function do_volumes_restore! {
 }
 
 function do_db_backup! {
-  if [ -z "$docker_mysql_db_names" ] && [ -z "$db_rclone_repo" ] && [ -z "$docker_mysql_user" ]; then
-    return 1
+  if [ -z "$db_rclone_repo" ]; then
+    echo "Skipping db backup"
+    return 0
   fi
+
+  init_backup_repository! "$db_rclone_repo"
+
+  dumps=()
+  remove_local_config () { rm -f ./backup.cnf; }
+  remove_docker_config () { docker exec $mysql_id sh -e -c "rm -f /backup.cnf"; }
+
+  if [ -n "$docker_mysql_db_names" ]; then
+    # Fetch mysql container
+    mysql_id=$(docker ps --filter "ancestor=mysql" -q)
+    [ -n "$mysql_id" ] || { echo "mysql not running, aborting backup" && exit 1; }
+
+    # Copy password file to mysql container
+    echo -e "[mysqldump]\nuser=$docker_mysql_user\npassword=$docker_mysql_password" > ./backup.cnf
+    if ! docker cp ./backup.cnf ${mysql_id}:/backup.cnf; then
+      # ensure password file will be removed in any conditions
+      echo "docker cp failed"
+      remove_local_config
+      return 1
+    else
+      remove_local_config
+    fi
+
+    # Run backup
+    # also ensure what config file removed fron container
+    docker exec $mysql_id sh -e -c "
+      mysqldump --defaults-extra-file=/backup.cnf --add-drop-database \
+                --databases $(split_by_comma $docker_mysql_db_names)" > ./docker_mysql_dump.sql || \
+    { remove_docker_config; echo "mysql dump failed"; return 1; }
+
+    dumps+=($(realpath ./docker_mysql_dump.sql))
+
+    # Remove password config file from container
+    remove_docker_config
+  fi
+
+  if [ -n "$host_postgresql_db_names" ]; then
+    for db in $(split_by_comma $host_postgresql_db_names); do
+      pg_dump --clean $db > ./host_postgresql_${db}_dump.sql
+      dumps+=($(realpath ./host_postgresql_${db}_dump.sql))
+    done
+  fi
+
+  backup_log=$(restic -v --password-file=<(echo $backup_storage_password) \
+                         --host=$backup_name \
+                         --repo=$db_rclone_repo backup ${dumps[@]}) || \
+  { rm -rf ${dumps[@]}; echo "db backup failed"; return 1; }
+
+  # Cleanup
+  rm -rf ${dumps[@]}
+
+  # remove unnecessary data from telegram message and notify
+  filtered_log=$(echo "$backup_log" | sed -n -E -e "/$backup_log_start_pattern/,\$p")
+  notify_to_telegram "$backup_name DB backup" "$filtered_log"
+
+  return 0
 }
 
 # Execution part
@@ -190,6 +258,7 @@ if [ "$1" = "restore" ]; then
   echo -e "\nRestore complete"
 else
   do_volumes_backup!
+  do_db_backup!
 
   echo -e "\nBackup complete"
 fi
