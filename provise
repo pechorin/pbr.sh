@@ -210,4 +210,3 @@ ssh "$ssh_connection_string" /bin/bash -e <<- STR
 
   # su $remote_user -c '~/backup'
 STR
-

@@ -223,7 +223,7 @@ function do_db_backup! {
                 --databases $(split_by_comma $docker_mysql_db_names)" > ./docker_mysql_dump.sql || \
     { remove_docker_config; echo "mysql dump failed"; return 1; }
 
-    dumps+=($(realpath ./docker_mysql_dump.sql))
+    dumps+=(docker_mysql_dump.sql)
 
     # Remove password config file from container
     remove_docker_config
@@ -232,10 +232,15 @@ function do_db_backup! {
   if [ -n "$host_postgresql_db_names" ]; then
     for db in $(split_by_comma $host_postgresql_db_names); do
       pg_dump --clean $db > ./host_postgresql_${db}_dump.sql
-      dumps+=($(realpath ./host_postgresql_${db}_dump.sql))
+      dumps+=(host_postgresql_${db}_dump.sql)
     done
   fi
 
+  # if no backups were configured then return
+  [ 0 -eq ${#dumps[@]} ] && return 0;
+
+
+  # otherwise do backup
   backup_log=$(restic -v --password-file=<(echo $backup_storage_password) \
                          --host=$backup_name \
                          --repo=$db_rclone_repo backup ${dumps[@]}) || \
@@ -251,9 +256,36 @@ function do_db_backup! {
   return 0
 }
 
+function do_db_restore! {
+  if [ -z "$db_rclone_repo" ]; then
+    echo "Skipping db restore"
+    return 0
+  fi
+
+  # TODO: this is copy-paste from do_volumes_restore!
+  #       i should optimize thi
+
+  restore_folder="./restore"
+
+  [ -d $restore_folder ] && rm -r $restore_folder      # ensure no restore folder present
+  mkdir $restore_folder                                # create new one
+  restore_folder_abs_path=$(realpath $restore_folder)  # construct absolute path
+
+  # Make this configurable?
+  restic --password-file=<(echo $backup_storage_password) -v --repo="$db_rclone_repo" check
+
+  # Do restore on host folder
+  restic --password-file=<(echo $backup_storage_password) -v --repo="$db_rclone_repo" restore latest \
+         --target="$restore_folder_abs_path"
+
+  # if [ -n "$docker_mysql_db_names" ]; then
+  # fi
+}
+
 # Execution part
 if [ "$1" = "restore" ]; then
   do_volumes_restore!
+  do_db_restore!
 
   echo -e "\nRestore complete"
 else
