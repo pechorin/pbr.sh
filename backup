@@ -5,6 +5,7 @@
 # - echo to stdout for all backup/restore logs
 # - restore from local machine?
 # - протестировать когда функция упала, нужно нормально обработать эту ситуацию и уведомить в телегу
+# - remove copy-paste from restore functions
 
 set -e
 
@@ -13,9 +14,12 @@ echo "Running pbr.sh"
 # TODO: or use value from $1 ?
 source ~/.config/.secrets/settings.conf
 
-# Markers for removing unnecessary lines from logs (for notifications)
-backup_log_start_pattern="using parent|start scan"
+# internal variables
+backup_log_start_pattern="using parent|start scan" # Markers for removing unnecessary lines from logs (for notifications)
 log_file_path="./pbr_log.txt"
+log_separator="--------------------"
+mysql_credentials_config_name="backup.cnf"
+mysql_backup_file_name="docker_mysql_dump.sql"
 
 # Check for required toolset
 test -n "$(command -v restic)" || { echo "restic missing" && exit 1; }
@@ -112,6 +116,56 @@ volumes_string_to_docker_volumes_arg () {
   return 0
 }
 
+# Remove old restore folder is exists
+# Create new one and return absolute path via stdin
+prepare_restore_folder () {
+  restore_folder="./restore"
+
+  [ -d $restore_folder ] && rm -r $restore_folder      # ensure no restore folder present
+  mkdir $restore_folder                                # create new one
+  restore_folder_abs_path=$(realpath $restore_folder)  # construct absolute path
+
+  echo $restore_folder_abs_path
+
+  return 0
+}
+
+get_mysql_container_id () {
+  mysql_id=$(docker ps --filter "ancestor=mysql" -q)
+  [ -n "$mysql_id" ] || { echo "mysql not running, aborting backup" && return 1; }
+
+  echo $mysql_id
+}
+
+# Create config file suitable for mysql
+# Copy this file to container
+#
+#
+# $1 -> mysql container id
+#
+# NOTICE: config file should be deleted after with remove_mysql_credentials_from_container
+copy_mysql_credentials_to_container () {
+  [ -z "$1" ] && { echo "mysql container id missing" && return 1; }
+
+  # Copy password file to mysql container
+  echo -e "[mysqldump]\nuser=$docker_mysql_user\npassword=$docker_mysql_password" > ./${mysql_credentials_config_name}
+
+  if ! docker cp ./${mysql_credentials_config_name} ${1}:/${mysql_credentials_config_name}; then
+    # ensure password file will be removed in any conditions
+    echo "docker cp failed"
+    rm -f ./${mysql_credentials_config_name}
+    return 1
+  else
+    rm -f ./${mysql_credentials_config_name}
+    return 0
+  fi
+}
+
+# $1 -> mysql container id
+remove_mysql_credentials_from_container () {
+  docker exec $1 sh -e -c "rm -f /${mysql_credentials_config_name}"; }
+}
+
 function do_volumes_backup! {
   if [ -z "$backup_docker_volumes" ] && [ -z "$volumes_rclone_repo" ]; then
     echo "Skipping volumes backup"
@@ -158,18 +212,14 @@ function do_volumes_restore! {
     return 0
   fi
 
-  restore_folder="./restore"
-
-  [ -d $restore_folder ] && rm -r $restore_folder      # ensure no restore folder present
-  mkdir $restore_folder                                # create new one
-  restore_folder_abs_path=$(realpath $restore_folder)  # construct absolute path
+  restore_folder_path=$(prepare_restore_folder)
 
   # Make this configurable?
   restic --password-file=<(echo $backup_storage_password) -v --repo="$volumes_rclone_repo" check
 
   # Do restore on host folder
-  restic --password-file=<(echo $backup_storage_password) -v --repo="$volumes_rclone_repo" restore latest \
-         --target="$restore_folder_abs_path"
+  restic --password-file=<(echo $backup_storage_password) -v --repo="$volumes_rclone_repo" restore \
+           latest --target="$restore_folder_path"
 
 
   # Mount restore folder and docker volumes in container, and then do restoration
@@ -187,8 +237,8 @@ function do_volumes_restore! {
   printf "$restore_log\n"
 
   # Count restored size and remove restore folder
-  restored_size=($(du -sh $restore_folder))
-  rm -r $restore_folder
+  restored_size=($(du -sh $restore_folder_path))
+  rm -r $restore_folder_path
 
   notify_to_telegram "Restoring $backup_name volumes backup" "total size: ${restored_size[0]}"
 
@@ -204,38 +254,25 @@ function do_db_backup! {
   init_backup_repository! "$db_rclone_repo"
 
   dumps=()
-  remove_local_config () { rm -f ./backup.cnf; }
-  remove_docker_config () { docker exec $mysql_id sh -e -c "rm -f /backup.cnf"; }
 
+  # Mysql docker backup
   if [ -n "$docker_mysql_db_names" ]; then
-    # Fetch mysql container
-    mysql_id=$(docker ps --filter "ancestor=mysql" -q)
-    [ -n "$mysql_id" ] || { echo "mysql not running, aborting backup" && exit 1; }
-
-    # Copy password file to mysql container
-    echo -e "[mysqldump]\nuser=$docker_mysql_user\npassword=$docker_mysql_password" > ./backup.cnf
-    if ! docker cp ./backup.cnf ${mysql_id}:/backup.cnf; then
-      # ensure password file will be removed in any conditions
-      echo "docker cp failed"
-      remove_local_config
-      return 1
-    else
-      remove_local_config
-    fi
+    mysql_id=$(get_mysql_container_id)
+    copy_mysql_credentials_to_container $mysql_id
 
     # Run backup
     # also ensure what config file removed fron container
     docker exec $mysql_id sh -e -c "
-      mysqldump --defaults-extra-file=/backup.cnf --add-drop-database \
-                --databases $(split_by_comma $docker_mysql_db_names)" > ./docker_mysql_dump.sql || \
-    { remove_docker_config; echo "mysql dump failed"; return 1; }
+      mysqldump --defaults-extra-file=/${mysql_credentials_config_name} --add-drop-database \
+                --databases $(split_by_comma $docker_mysql_db_names)" > ./${mysql_backup_file_name} || \
+    { remove_mysql_credentials_from_container $mysql_id ; echo "mysql dump failed"; return 1; }
 
-    dumps+=(docker_mysql_dump.sql)
+    dumps+=($mysql_backup_file_name)
 
-    # Remove password config file from container
-    remove_docker_config
+    remove_mysql_credentials_from_container $mysql_id
   fi
 
+  # Postgresql docker backup
   if [ -n "$host_postgresql_db_names" ]; then
     for db in $(split_by_comma $host_postgresql_db_names); do
       pg_dump --clean $db > ./host_postgresql_${db}_dump.sql
@@ -243,9 +280,8 @@ function do_db_backup! {
     done
   fi
 
-  # if no backups were configured then return
+  # if no backups was processed then return
   [ 0 -eq ${#dumps[@]} ] && return 0;
-
 
   # otherwise do backup
   backup_log=$(restic -v --password-file=<(echo $backup_storage_password) \
@@ -272,29 +308,43 @@ function do_db_restore! {
     return 0
   fi
 
-  # TODO: this is copy-paste from do_volumes_restore!
-  #       i should optimize thi
-
-  restore_folder="./restore"
-
-  [ -d $restore_folder ] && rm -r $restore_folder      # ensure no restore folder present
-  mkdir $restore_folder                                # create new one
-  restore_folder_abs_path=$(realpath $restore_folder)  # construct absolute path
+  restore_folder_path=$(prepare_restore_folder)
 
   # Make this configurable?
   restic --password-file=<(echo $backup_storage_password) -v --repo="$db_rclone_repo" check
 
   # Do restore on host folder
   restic --password-file=<(echo $backup_storage_password) -v --repo="$db_rclone_repo" restore latest \
-         --target="$restore_folder_abs_path"
+         --target="$restore_folder_path"
 
-  # if [ -n "$docker_mysql_db_names" ]; then
-  # fi
+  if [ -n "$docker_mysql_db_names" ]; then
+    mysql_id=$(get_mysql_container_id)
+    copy_mysql_credentials_to_container $mysql_id
+
+    # Run restore
+    # also ensure what config file removed fron container
+    docker exec -i $mysql_id sh -c "mysql --defaults-extra-file=/${mysql_credentials_config_name}" \
+      < ${restore_folder_path}/${mysql_backup_file_name} || \
+      { remove_mysql_credentials_from_container $mysql_id ; echo "mysql restore failed"; return 1 }
+
+    remove_mysql_credentials_from_container $mysql_id
+  fi
+
+  if [ -n "$host_postgresql_db_names" ]; then
+    for db in $(split_by_comma $host_postgresql_db_names); do
+      psql $db < ${restore_folder_path}/host_postgresql_${db}_dump.sql
+    done
+  fi
+
+  restored_size=($(du -sh $restore_folder_path))
+  rm -rf $restore_folder_path
+
+  notify_to_telegram "Restoring $backup_name db backup" "total size: ${restored_size[0]}"
 }
 
 # Execution part
 run!() {
-  echo -e "\n----------"
+  echo -e "\n$log_separator"
 
   if [ "$1" = "restore" ]; then
     echo "Starting restore at $(date)"

@@ -11,6 +11,7 @@ function echo_warn() { echo -e '\033[1;33m'"$1"'\033[0m'; }
 # - load docker daemon config
 # - add option to disable root login after setup
 # - if no backup targets provided - ignore copying
+# - password generating in insecure
 
 # ------------ Provisioning prerequirements check ------------
 
