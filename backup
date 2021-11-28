@@ -7,7 +7,33 @@
 # - протестировать когда функция упала, нужно нормально обработать эту ситуацию и уведомить в телегу
 # - remove copy-paste from restore functions
 
+# TODO_CRITICAL:
+# - check volumes for present before do backup
+
 set -e
+set -o pipefail
+
+umask 077
+
+# Echo error string to stderr
+# Exit if not error message provided
+echo_err() {
+  [ -z "$1" ] && {
+    echo 'Error message not provided via $1' >&2
+    exit 1
+  }
+
+  printf "$1\n" >&2
+}
+
+# Check for required host toolset
+required_host_programms=(restic curl docker)
+for prog in $required_host_programms; do
+  if ! [ -n "$(command -v $prog)" ]; then
+    echo_err "$prog not installed or missing on host machine"
+    exit 1
+  fi
+done
 
 echo "Running pbr.sh"
 
@@ -15,57 +41,107 @@ echo "Running pbr.sh"
 source ~/.config/.secrets/settings.conf
 
 # internal variables
+restore_folder="./restore"
 backup_log_start_pattern="using parent|start scan" # Markers for removing unnecessary lines from logs (for notifications)
 log_file_path="./pbr_log.txt"
 log_separator="--------------------"
 mysql_credentials_config_name="backup.cnf"
 mysql_backup_file_name="docker_mysql_dump.sql"
 
-# Check for required toolset
-test -n "$(command -v restic)" || { echo "restic missing" && exit 1; }
-test -n "$(command -v curl)"   || { echo "curl missing" && exit 1; }
+# All working files used in sciprt should be listed in this array,
+# so we can clean them up after script error / exit
+working_files=()
+
+# Remove all created working files on script exit
+finalize() {
+  # Remove files from host
+  for file in "${working_files[@]}"; do
+    echo "removing working file $file"
+    rm -rf "${file}"
+  done
+
+  working_files=()
+
+  # Remove files from containers
+  mysql_id=$(get_mysql_container_id 2> /dev/null)
+  if [ -n "$mysql_id" ]; then
+    remove_mysql_credentials_from_container $mysql_id
+  fi
+}
+
+trap finalize EXIT ERR
+
 
 # $1 -> repository name
 function init_backup_repository! {
   # if repo not exists
   if ! restic --password-file=<(echo $backup_storage_password) --repo="$1" cat config > /dev/null; then
     # then init new one
-    restic --password-file=<(echo $backup_storage_password) --repo="$1" init
+    restic --password-file=<(echo $backup_storage_password) --repo="$1" init || {
+      echo_err "Failed initializing restic repository $1"
+      exit 1
+    }
   fi
 }
 
 # $1 -> bold title message
 # $2 -> log message
+# No return 1 or abort here, silently fail
 function notify_to_telegram {
   if [ -z "$1" ] || [ -z "$2" ] || [ -z "$telegram_bot_token" ] || [ -z "$telegram_chat_id" ]; then
-    echo "skipping telegram notifications"
+    echo_err "Skipping telegram notifications (reason: not configured)"
     return 0
   fi
 
-  local text="<b>$1</b>\n$2"
-  local message_json="{\"chat_id\": $telegram_chat_id, \"text\": \"$text\", \"parse_mode\": \"html\", \"disable_notification\": true}"
+  text="<b>$1</b>\n$2"
+  message_json="{
+    \"chat_id\": $telegram_chat_id,
+    \"text\": \"$text\",
+    \"parse_mode\": \"html\",
+    \"disable_notification\": true
+  }"
 
+  curl --silent --show-error --fail -X POST \
+    -H 'Content-Type: application/json' \
+    -d "$message_json" https://api.telegram.org/bot${telegram_bot_token}/sendMessage > /dev/null || \
+      echo_err "sending to telegram failed"
 
-  curl -X POST \
-       -H 'Content-Type: application/json' \
-       -d "$message_json" \
-       https://api.telegram.org/bot${telegram_bot_token}/sendMessage
+  return 0
 }
 
 # Convert "a,b" string to list
 # "a, b,c" => a b c
-# "a,   b" => a b
+# "a ,b" => a b
+#
+# "a a,b" => return 1, we don't support names with spaces like "my volume"
 split_by_comma () {
-  [ -z "$1" ] && return 1;
+  [ -z "$1" ] && {
+    echo_err 'String for splitting not provided via $1'
+    return 1
+  }
 
   local volumes=()
 
-  OLD_IFS="$IFS"; IFS=','
+  local OLD_IFS="$IFS";
+  local IFS=','
+
   for v in $1; do
-    volume_name=$(echo "$v" | sed 's/ //g') # remove spaces around
+    # remove space before and after volume name
+    volume_name=$(echo "$v" | sed 's/\(^ \| $\)//g') || {
+      echo_err "volume name filtering failed"
+      return 1
+    }
+
+    # if still found any space then abort script
+    if [[ "$volume_name" =~ " " ]]; then
+      echo_err "Names with spaces are forbidden, not sorry here"
+      return 1
+    fi
+
     volumes+=("$volume_name")
   done
-  IFS="$OLD_IFS"
+
+  local IFS="$OLD_IFS"
 
   echo ${volumes[@]}
   return 0
@@ -78,11 +154,11 @@ split_by_comma () {
 # if --with-path-glob-ending provided in $2 then convert to:
 #   /a/* /b/*
 volumes_string_to_mounted_dir_list () {
-  [ -z "$1" ] && return 1;
+  volumes_list=$(split_by_comma "$1") || return 1
+  dir_list=()
 
-  local dir_list=()
-  for v in $(split_by_comma "$1"); do
-    if [ "$2" == "--with-path-glob-ending" ]; then
+  for v in $volumes_list; do
+    if [ "$2" = "--with-path-glob-ending" ]; then
       dir_list+=("/$v/*")
     else
       dir_list+=("/$v")
@@ -99,10 +175,10 @@ volumes_string_to_mounted_dir_list () {
 # if --readonly provided in $2 then convert to:
 #   -v a:/a/:ro -v b:/b/:ro
 volumes_string_to_docker_volumes_arg () {
-  [ -z "$1" ] && return 1;
+  volumes_list=$(split_by_comma "$1") || return 1
+  args_list=()
 
-  local args_list=()
-  for v in $(split_by_comma "$1"); do
+  for v in $volumes_list; do
     args_list+=("-v")
 
     if [ "$2" = "--readonly" ]; then
@@ -119,20 +195,25 @@ volumes_string_to_docker_volumes_arg () {
 # Remove old restore folder is exists
 # Create new one and return absolute path via stdin
 prepare_restore_folder () {
-  restore_folder="./restore"
-
   [ -d $restore_folder ] && rm -r $restore_folder      # ensure no restore folder present
   mkdir $restore_folder                                # create new one
-  restore_folder_abs_path=$(realpath $restore_folder)  # construct absolute path
 
-  echo $restore_folder_abs_path
+  restore_folder_abs_path=$(realpath $restore_folder)  # construct absolute path
+  echo $restore_folder_abs_path                        # echo absolute path to stdout
 
   return 0
 }
 
 get_mysql_container_id () {
-  mysql_id=$(docker ps --filter "ancestor=mysql" -q)
-  [ -n "$mysql_id" ] || { echo "mysql not running, aborting backup" && return 1; }
+  mysql_id=$(docker ps --filter "ancestor=mysql" -q) || {
+    echo_err "Can't fetch mysql docker container id"
+    return 1
+  }
+
+  [ -z "$mysql_id" ] && {
+    echo_err "Mysql container not running"
+    return 1
+  }
 
   echo $mysql_id
 }
@@ -140,45 +221,51 @@ get_mysql_container_id () {
 # Create config file suitable for mysql
 # Copy this file to container
 #
-#
 # $1 -> mysql container id
+# $2 -> if --restore provided, then restore config will be used (for mysql binary)
 #
 # NOTICE: config file should be deleted after with remove_mysql_credentials_from_container
 copy_mysql_credentials_to_container () {
-  [ -z "$1" ] && { echo "mysql container id missing" && return 1; }
+  [ -z "$1" ] && { echo_err 'mysql container id not provided via $1' && exit 1; }
 
-  # Copy password file to mysql container
-  echo -e "[mysqldump]\nuser=$docker_mysql_user\npassword=$docker_mysql_password" > ./${mysql_credentials_config_name}
+  # Determintate type of process, is it restore or backup?
+  if [ "$2" = "--restore" ]; then binary_name="mysql"; else binary_name="mysqldump"; fi
 
-  if ! docker cp ./${mysql_credentials_config_name} ${1}:/${mysql_credentials_config_name}; then
-    # ensure password file will be removed in any conditions
-    echo "docker cp failed"
-    rm -f ./${mysql_credentials_config_name}
+  # Consturct mysql configuration file with credentials
+  echo -e "[${binary_name}]\nuser=$docker_mysql_user\npassword=$docker_mysql_password" > \
+    ./${mysql_credentials_config_name}
+
+  working_files+=("./${mysql_credentials_config_name}")
+
+  # Copy configuration file to container
+  docker cp ./${mysql_credentials_config_name} ${1}:/${mysql_credentials_config_name} || {
+    echo_err "Docker copy failed"
     return 1
-  else
-    rm -f ./${mysql_credentials_config_name}
-    return 0
-  fi
+  }
 }
 
 # $1 -> mysql container id
 remove_mysql_credentials_from_container () {
-  docker exec $1 sh -e -c "rm -f /${mysql_credentials_config_name}"; }
+  docker exec "$1" sh -e -c "rm -f /${mysql_credentials_config_name}" || {
+    echo_err "Can't remove config file from container"
+    return 1
+  }
 }
 
 function do_volumes_backup! {
   if [ -z "$backup_docker_volumes" ] && [ -z "$volumes_rclone_repo" ]; then
-    echo "Skipping volumes backup"
-    return 0
+    echo "Skipping volumes backup" && return 0
   fi
 
-  init_backup_repository! "$volumes_rclone_repo"
+  init_backup_repository! "$volumes_rclone_repo" || return 1
+
+  volumes_arg_list=$(volumes_string_to_docker_volumes_arg $backup_docker_volumes --readonly) || return 1
+  mounted_dir_list=$(volumes_string_to_mounted_dir_list $backup_docker_volumes) || return 1
 
   # Bakcup command will run in container:
   backup_command="restic -v --password-file=<(echo \$backup_storage_password) \
                             --host=\$backup_name \
-                            --repo=\$volumes_rclone_repo backup \
-                            $(volumes_string_to_mounted_dir_list $backup_docker_volumes)"
+                            --repo=\$volumes_rclone_repo backup $mounted_dir_list"
 
   # Run backup inside container
   # - mount backup volumes
@@ -187,20 +274,23 @@ function do_volumes_backup! {
   # - run backup inside alpine container, but use bash instead of ash internally
   #   because we need bash process substituion <() for safety providing password to processes
   backup_log=$(docker run --rm --name "volumes_backup" \
-    $(volumes_string_to_docker_volumes_arg $backup_docker_volumes --readonly) \
+    $volumes_arg_list \
     -v "$(realpath ~/.config/rclone/rclone.conf):/root/.config/rclone/rclone.conf:ro" \
     -v "$(realpath ~/.config/.secrets/settings.conf):/settings.conf:ro" \
     alpine:latest /bin/ash -e -c "
       apk update && apk add rclone restic bash
       source ./settings.conf
       bash -c \"$backup_command\"
-  ")
+  ") || {
+    echo_err "docker volumes backup failed"
+    return 1
+  }
 
   # Log to stdout
   printf "$backup_log\n"
 
   # remove unnecessary data from telegram message and notify
-  filtered_log=$(echo "$backup_log" | sed -n -E -e "/$backup_log_start_pattern/,\$p")
+  filtered_log=$(printf "$backup_log" | sed -n -E -e "/$backup_log_start_pattern/,\$p")
   notify_to_telegram "$backup_name volumes backup" "$filtered_log"
 
   return 0
@@ -213,33 +303,41 @@ function do_volumes_restore! {
   fi
 
   restore_folder_path=$(prepare_restore_folder)
+  working_files+=($restore_folder_path)
+
+  echo "current restore folders -> ${working_files[@]}"
+
+  volumes_list=$(split_by_comma $backup_docker_volumes) || return 1
+  volumes_arg_list=$(volumes_string_to_docker_volumes_arg $backup_docker_volumes) || return 1
+  mounted_dir_list=$(volumes_string_to_mounted_dir_list $backup_docker_volumes --with-path-glob-ending) || return 1
 
   # Make this configurable?
-  restic --password-file=<(echo $backup_storage_password) -v --repo="$volumes_rclone_repo" check
+  restic --password-file=<(echo $backup_storage_password) -v --repo="$volumes_rclone_repo" check || return 1
 
   # Do restore on host folder
   restic --password-file=<(echo $backup_storage_password) -v --repo="$volumes_rclone_repo" restore \
-           latest --target="$restore_folder_path"
+           latest --target="$restore_folder_path" || return 1
 
 
   # Mount restore folder and docker volumes in container, and then do restoration
   restore_log=$(docker run --rm --name "restore" \
-    $(volumes_string_to_docker_volumes_arg $backup_docker_volumes) \
-    -v "$restore_folder_abs_path:/restore/" \
+    $volumes_arg_list \
+    -v "$restore_folder_path:/restore/" \
     alpine:latest /bin/ash -e -c "
-      rm -rf $(volumes_string_to_mounted_dir_list $backup_docker_volumes --with-path-glob-ending)
-      for v in $(split_by_comma $backup_docker_volumes); do
+      rm -rf $mounted_dir_list
+      for v in $volumes_list; do
         cp -r /restore/\${v}/* /\${v}/
       done
-  ")
+  ") || {
+    echo_err "docker volumes restore failed"
+    return 1
+  }
 
   # Log to stdout
   printf "$restore_log\n"
 
   # Count restored size and remove restore folder
   restored_size=($(du -sh $restore_folder_path))
-  rm -r $restore_folder_path
-
   notify_to_telegram "Restoring $backup_name volumes backup" "total size: ${restored_size[0]}"
 
   return 0
@@ -251,32 +349,46 @@ function do_db_backup! {
     return 0
   fi
 
-  init_backup_repository! "$db_rclone_repo"
+  init_backup_repository! "$db_rclone_repo" || return 1
 
   dumps=()
 
   # Mysql docker backup
   if [ -n "$docker_mysql_db_names" ]; then
-    mysql_id=$(get_mysql_container_id)
-    copy_mysql_credentials_to_container $mysql_id
+    mysql_id=$(get_mysql_container_id) || return 1
+    copy_mysql_credentials_to_container $mysql_id || return 1
 
     # Run backup
     # also ensure what config file removed fron container
+    mysql_databases=$(split_by_comma $docker_mysql_db_names) || return 1
     docker exec $mysql_id sh -e -c "
       mysqldump --defaults-extra-file=/${mysql_credentials_config_name} --add-drop-database \
-                --databases $(split_by_comma $docker_mysql_db_names)" > ./${mysql_backup_file_name} || \
-    { remove_mysql_credentials_from_container $mysql_id ; echo "mysql dump failed"; return 1; }
+                --databases $mysql_databases " > ./${mysql_backup_file_name} || {
+      echo_err "mysql dump failed"
+      return 1
+    }
 
     dumps+=($mysql_backup_file_name)
-
-    remove_mysql_credentials_from_container $mysql_id
+    working_files+=("./$mysql_backup_file_name")
   fi
 
   # Postgresql docker backup
   if [ -n "$host_postgresql_db_names" ]; then
-    for db in $(split_by_comma $host_postgresql_db_names); do
-      pg_dump --clean $db > ./host_postgresql_${db}_dump.sql
+    pg_databases=$(split_by_comma $host_postgresql_db_names) || return 1
+
+    # TODO: move to prerequirements part?
+    if [ -z "$(command -v pg_dump)" ]; then
+      echo_err "pg_dump not installed or missing on host machine"
+      return 1
+    fi
+
+    for db in $pg_databases; do
+      dump_path="./host_postgresql_${db}_dump.sql"
+
+      pg_dump --clean $db > $dump_path
+
       dumps+=(host_postgresql_${db}_dump.sql)
+      working_files+=($dump_path)
     done
   fi
 
@@ -286,91 +398,85 @@ function do_db_backup! {
   # otherwise do backup
   backup_log=$(restic -v --password-file=<(echo $backup_storage_password) \
                          --host=$backup_name \
-                         --repo=$db_rclone_repo backup ${dumps[@]}) || \
-  { rm -rf ${dumps[@]}; echo "db backup failed"; return 1; }
-
-  # Cleanup
-  rm -rf ${dumps[@]}
+                         --repo=$db_rclone_repo backup ${dumps[@]}) || { echo_err "db backup failed"; return 1; }
 
   # Log to stdout
   printf "$backup_log\n"
 
   # remove unnecessary data from telegram message and notify
-  filtered_log=$(echo "$backup_log" | sed -n -E -e "/$backup_log_start_pattern/,\$p")
+  filtered_log=$(printf "$backup_log" | sed -n -E -e "/$backup_log_start_pattern/,\$p")
   notify_to_telegram "$backup_name DB backup" "$filtered_log"
 
   return 0
 }
 
-function do_db_restore! {
-  if [ -z "$db_rclone_repo" ]; then
-    echo "Skipping db restore"
-    return 0
-  fi
+# function do_db_restore! {
+#   if [ -z "$db_rclone_repo" ]; then
+#     echo "Skipping db restore"
+#     return 0
+#   fi
 
-  restore_folder_path=$(prepare_restore_folder)
+#   restore_folder_path=$(prepare_restore_folder)
 
-  # Make this configurable?
-  restic --password-file=<(echo $backup_storage_password) -v --repo="$db_rclone_repo" check
+#   # Make this configurable?
+#   restic --password-file=<(echo $backup_storage_password) -v --repo="$db_rclone_repo" check
 
-  # Do restore on host folder
-  restic --password-file=<(echo $backup_storage_password) -v --repo="$db_rclone_repo" restore latest \
-         --target="$restore_folder_path"
+#   # Do restore on host folder
+#   restic --password-file=<(echo $backup_storage_password) -v --repo="$db_rclone_repo" restore latest \
+#          --target="$restore_folder_path"
 
-  if [ -n "$docker_mysql_db_names" ]; then
-    mysql_id=$(get_mysql_container_id)
-    copy_mysql_credentials_to_container $mysql_id
 
-    # Run restore
-    # also ensure what config file removed fron container
-    docker exec -i $mysql_id sh -c "mysql --defaults-extra-file=/${mysql_credentials_config_name}" \
-      < ${restore_folder_path}/${mysql_backup_file_name} || \
-      { remove_mysql_credentials_from_container $mysql_id ; echo "mysql restore failed"; return 1 }
+#   if [ -n "$docker_mysql_db_names" ]; then
+#     mysql_id=$(get_mysql_container_id)
+#     copy_mysql_credentials_to_container $mysql_id --restore
 
-    remove_mysql_credentials_from_container $mysql_id
-  fi
+#     cleanup_restore() {
+#       remove_mysql_credentials_from_container $mysql_id
+#       rm -rf $restore_folder_path
+#     }
 
-  if [ -n "$host_postgresql_db_names" ]; then
-    for db in $(split_by_comma $host_postgresql_db_names); do
-      psql $db < ${restore_folder_path}/host_postgresql_${db}_dump.sql
-    done
-  fi
+#     # Run restore
+#     # also ensure what config file removed fron container
+#     docker exec -i $mysql_id sh -c "mysql --defaults-extra-file=/${mysql_credentials_config_name}" \
+#       < ${restore_folder_path}/${mysql_backup_file_name} || \
+#       { cleanup_restore ; echo "mysql restore failed"; return 1; }
 
-  restored_size=($(du -sh $restore_folder_path))
-  rm -rf $restore_folder_path
+#     remove_mysql_credentials_from_container $mysql_id
+#   fi
 
-  notify_to_telegram "Restoring $backup_name db backup" "total size: ${restored_size[0]}"
-}
+#   if [ -n "$host_postgresql_db_names" ]; then
+#     for db in $(split_by_comma $host_postgresql_db_names); do
+#       psql $db < ${restore_folder_path}/host_postgresql_${db}_dump.sql
+#     done
+#   fi
+
+#   restored_size=($(du -sh $restore_folder_path))
+#   rm -rf $restore_folder_path
+
+#   notify_to_telegram "Restoring $backup_name db backup" "total size: ${restored_size[0]}"
+# }
 
 # Execution part
+if [ "$1" = "restore" ]; then current_action="restore"; else current_action="backup"; fi
+
 run!() {
   echo -e "\n$log_separator"
+  echo "Starting $current_action at $(date)"
 
-  if [ "$1" = "restore" ]; then
-    echo "Starting restore at $(date)"
-
-    do_volumes_restore!
-    do_db_restore!
-
-    echo -e "\nRestore complete"
+  if [ "$current_action" = "restore" ]; then
+    do_volumes_restore! || return 1
+    # do_db_restore! || return 1
   else
-    echo "Starting backup at $(date)"
-
-    do_volumes_backup!
-    do_db_backup!
-
-    echo -e "\nBackup complete"
+    do_volumes_backup! || return 1
+    do_db_backup! || return 1
   fi
+
+  echo -e "$current_action completed at $(date)"
 }
 
 run! $1 &>> $log_file_path || {
-  if [ "$1" = "restore" ]; then
-    failed_part="Restore"
-  else
-    failed_part="Backup"
-  fi
-
-  notify_to_telegram "$failed_part script failed", "inspect errors in $log_file_path"
+  notify_to_telegram "$current_action script failed" \
+                     "inspect errors on host ~/$log_file_path"
 }
 
 echo "pbr.sh finished, log can be found in $log_file_path"
