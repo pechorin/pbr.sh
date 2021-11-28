@@ -410,51 +410,52 @@ function do_db_backup! {
   return 0
 }
 
-# function do_db_restore! {
-#   if [ -z "$db_rclone_repo" ]; then
-#     echo "Skipping db restore"
-#     return 0
-#   fi
+function do_db_restore! {
+  if [ -z "$db_rclone_repo" ]; then
+    echo "Skipping db restore"
+    return 0
+  fi
 
-#   restore_folder_path=$(prepare_restore_folder)
+  restore_folder_path=$(prepare_restore_folder)
+  working_files+=($restore_folder_path)
 
-#   # Make this configurable?
-#   restic --password-file=<(echo $backup_storage_password) -v --repo="$db_rclone_repo" check
+  # Make this configurable?
+  restic --password-file=<(echo $backup_storage_password) -v --repo="$db_rclone_repo" check || return 1
 
-#   # Do restore on host folder
-#   restic --password-file=<(echo $backup_storage_password) -v --repo="$db_rclone_repo" restore latest \
-#          --target="$restore_folder_path"
+  # Do restore on host folder
+  restic --password-file=<(echo $backup_storage_password) -v --repo="$db_rclone_repo" restore latest \
+         --target="$restore_folder_path" || return 1
 
 
-#   if [ -n "$docker_mysql_db_names" ]; then
-#     mysql_id=$(get_mysql_container_id)
-#     copy_mysql_credentials_to_container $mysql_id --restore
+  if [ -n "$docker_mysql_db_names" ]; then
+    mysql_id=$(get_mysql_container_id) || return 1
+    copy_mysql_credentials_to_container $mysql_id --restore || return 1
 
-#     cleanup_restore() {
-#       remove_mysql_credentials_from_container $mysql_id
-#       rm -rf $restore_folder_path
-#     }
+    cleanup_restore() {
+      rm -rf $restore_folder_path
+    }
 
-#     # Run restore
-#     # also ensure what config file removed fron container
-#     docker exec -i $mysql_id sh -c "mysql --defaults-extra-file=/${mysql_credentials_config_name}" \
-#       < ${restore_folder_path}/${mysql_backup_file_name} || \
-#       { cleanup_restore ; echo "mysql restore failed"; return 1; }
+    # Run restore
+    # also ensure what config file removed fron container
+    docker exec -i $mysql_id sh -c "mysql --defaults-extra-file=/${mysql_credentials_config_name}" \
+      < ${restore_folder_path}/${mysql_backup_file_name} || {
+        cleanup_restore
+        echo_err "mysql restore failed"
+        return 1
+    }
+  fi
 
-#     remove_mysql_credentials_from_container $mysql_id
-#   fi
+  if [ -n "$host_postgresql_db_names" ]; then
+    pg_databases=$(split_by_comma $host_postgresql_db_names) || return 1
 
-#   if [ -n "$host_postgresql_db_names" ]; then
-#     for db in $(split_by_comma $host_postgresql_db_names); do
-#       psql $db < ${restore_folder_path}/host_postgresql_${db}_dump.sql
-#     done
-#   fi
+    for db in $pg_databases; do
+      psql $db < ${restore_folder_path}/host_postgresql_${db}_dump.sql
+    done
+  fi
 
-#   restored_size=($(du -sh $restore_folder_path))
-#   rm -rf $restore_folder_path
-
-#   notify_to_telegram "Restoring $backup_name db backup" "total size: ${restored_size[0]}"
-# }
+  restored_size=($(du -sh $restore_folder_path))
+  notify_to_telegram "Restoring $backup_name db backup" "total size: ${restored_size[0]}"
+}
 
 # Execution part
 if [ "$1" = "restore" ]; then current_action="restore"; else current_action="backup"; fi
@@ -465,7 +466,7 @@ run!() {
 
   if [ "$current_action" = "restore" ]; then
     do_volumes_restore! || return 1
-    # do_db_restore! || return 1
+    do_db_restore! || return 1
   else
     do_volumes_backup! || return 1
     do_db_backup! || return 1
