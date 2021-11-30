@@ -9,6 +9,8 @@
 
 # TODO_CRITICAL:
 # - check volumes for present before do backup
+# - add restory data only flag (just download from cloud, do not do restore)
+# - add restore snapshot name
 
 set -e
 set -o pipefail
@@ -362,7 +364,7 @@ function do_db_backup! {
     # also ensure what config file removed fron container
     mysql_databases=$(split_by_comma $docker_mysql_db_names) || return 1
     docker exec $mysql_id sh -e -c "
-      mysqldump --defaults-extra-file=/${mysql_credentials_config_name} --add-drop-database \
+      mysqldump --defaults-extra-file=/${mysql_credentials_config_name} \
                 --databases $mysql_databases " > ./${mysql_backup_file_name} || {
       echo_err "mysql dump failed"
       return 1
