@@ -1,21 +1,9 @@
 #!/usr/bin/env bash
 
-# TODO:
-# - multiple backup repo targets
-# - echo to stdout for all backup/restore logs
-# - restore from local machine?
-# - протестировать когда функция упала, нужно нормально обработать эту ситуацию и уведомить в телегу
-# - remove copy-paste from restore functions
-
-# TODO_CRITICAL:
-# - check volumes for present before do backup
-# - add restory data only flag (just download from cloud, do not do restore)
-# - add restore snapshot name
-
 set -e
 set -o pipefail
 
-umask 077
+umask o=rwx,go=
 
 # Echo error string to stderr
 # Exit if not error message provided
@@ -42,9 +30,11 @@ echo "Running pbr.sh"
 # TODO: or use value from $1 ?
 source ~/.config/.secrets/settings.conf
 
-# internal variables
+# Regexp for removing unnecessary lines from logs (for notifications)
+backup_log_start_pattern="using parent|start scan"
+
+# Variables
 restore_folder="./restore"
-backup_log_start_pattern="using parent|start scan" # Markers for removing unnecessary lines from logs (for notifications)
 log_file_path="./pbr_log.txt"
 log_separator="--------------------"
 mysql_credentials_config_name="backup.cnf"
@@ -73,9 +63,8 @@ finalize() {
 
 trap finalize EXIT ERR
 
-
 # $1 -> repository name
-function init_backup_repository! {
+init_backup_repository!() {
   # if repo not exists
   if ! restic --password-file=<(echo $backup_storage_password) --repo="$1" cat config > /dev/null; then
     # then init new one
@@ -89,7 +78,7 @@ function init_backup_repository! {
 # $1 -> bold title message
 # $2 -> log message
 # No return 1 or abort here, silently fail
-function notify_to_telegram {
+notify_to_telegram() {
   if [ -z "$1" ] || [ -z "$2" ] || [ -z "$telegram_bot_token" ] || [ -z "$telegram_chat_id" ]; then
     echo_err "Skipping telegram notifications (reason: not configured)"
     return 0
@@ -116,7 +105,7 @@ function notify_to_telegram {
 # "a ,b" => a b
 #
 # "a a,b" => return 1, we don't support names with spaces like "my volume"
-split_by_comma () {
+split_by_comma() {
   [ -z "$1" ] && {
     echo_err 'String for splitting not provided via $1'
     return 1
@@ -155,7 +144,7 @@ split_by_comma () {
 #
 # if --with-path-glob-ending provided in $2 then convert to:
 #   /a/* /b/*
-volumes_string_to_mounted_dir_list () {
+volumes_string_to_mounted_dir_list() {
   volumes_list=$(split_by_comma "$1") || return 1
   dir_list=()
 
@@ -176,7 +165,7 @@ volumes_string_to_mounted_dir_list () {
 #   -v a:/a/ -v b:/b/
 # if --readonly provided in $2 then convert to:
 #   -v a:/a/:ro -v b:/b/:ro
-volumes_string_to_docker_volumes_arg () {
+volumes_string_to_docker_volumes_arg() {
   volumes_list=$(split_by_comma "$1") || return 1
   args_list=()
 
@@ -196,9 +185,9 @@ volumes_string_to_docker_volumes_arg () {
 
 # Remove old restore folder is exists
 # Create new one and return absolute path via stdin
-prepare_restore_folder () {
+prepare_restore_folder() {
   [ -d $restore_folder ] && rm -r $restore_folder      # ensure no restore folder present
-  mkdir $restore_folder                                # create new one
+  mkdir $restore_folder                                  # create new one
 
   restore_folder_abs_path=$(realpath $restore_folder)  # construct absolute path
   echo $restore_folder_abs_path                        # echo absolute path to stdout
@@ -206,7 +195,7 @@ prepare_restore_folder () {
   return 0
 }
 
-get_mysql_container_id () {
+get_mysql_container_id() {
   mysql_id=$(docker ps --filter "ancestor=mysql" -q) || {
     echo_err "Can't fetch mysql docker container id"
     return 1
@@ -227,7 +216,7 @@ get_mysql_container_id () {
 # $2 -> if --restore provided, then restore config will be used (for mysql binary)
 #
 # NOTICE: config file should be deleted after with remove_mysql_credentials_from_container
-copy_mysql_credentials_to_container () {
+copy_mysql_credentials_to_container() {
   [ -z "$1" ] && { echo_err 'mysql container id not provided via $1' && exit 1; }
 
   # Determintate type of process, is it restore or backup?
@@ -247,19 +236,41 @@ copy_mysql_credentials_to_container () {
 }
 
 # $1 -> mysql container id
-remove_mysql_credentials_from_container () {
+remove_mysql_credentials_from_container() {
   docker exec "$1" sh -e -c "rm -f /${mysql_credentials_config_name}" || {
     echo_err "Can't remove config file from container"
     return 1
   }
 }
 
-function do_volumes_backup! {
+# $1 -> volumes list to check
+check_docker_volumes_presence!() {
+  [ -z "$1" ] && { echo_err "Volumes list not provided in $1" && return 1; }
+
+  volumes_list="$(docker volume list -q)" || {
+    echo_err "Can't fetch docker volumes list"
+    return 1
+  }
+
+  for v in "pechorindev"; do
+    if ! [[ "$volumes_list" =~ "$v" ]]; then
+      echo_err "Docker volume not created on host machine"
+      return 1
+    fi
+  done
+
+  return 0
+}
+
+do_volumes_backup!() {
   if [ -z "$backup_docker_volumes" ] && [ -z "$volumes_rclone_repo" ]; then
     echo "Skipping volumes backup" && return 0
   fi
 
   init_backup_repository! "$volumes_rclone_repo" || return 1
+
+  volumes_list=$(split_by_comma $backup_docker_volumes) || return 1
+  check_docker_volumes_presence! "$volumes_list" || return 1
 
   volumes_arg_list=$(volumes_string_to_docker_volumes_arg $backup_docker_volumes --readonly) || return 1
   mounted_dir_list=$(volumes_string_to_mounted_dir_list $backup_docker_volumes) || return 1
@@ -298,20 +309,21 @@ function do_volumes_backup! {
   return 0
 }
 
-function do_volumes_restore! {
+do_volumes_restore!() {
   if [ -z "$backup_docker_volumes" ] && [ -z "$volumes_rclone_repo" ]; then
     echo "Skipping docker volumes restore"
     return 0
   fi
 
+  volumes_list=$(split_by_comma $backup_docker_volumes) || return 1
+  check_docker_volumes_presence! "$volumes_list" || return 1
+
   restore_folder_path=$(prepare_restore_folder)
   working_files+=($restore_folder_path)
 
-  echo "current restore folders -> ${working_files[@]}"
-
-  volumes_list=$(split_by_comma $backup_docker_volumes) || return 1
   volumes_arg_list=$(volumes_string_to_docker_volumes_arg $backup_docker_volumes) || return 1
-  mounted_dir_list=$(volumes_string_to_mounted_dir_list $backup_docker_volumes --with-path-glob-ending) || return 1
+  mounted_dir_list=$(volumes_string_to_mounted_dir_list $backup_docker_volumes) || return 1
+  mounted_dir_list_with_glob=$(volumes_string_to_mounted_dir_list $backup_docker_volumes --with-path-glob-ending) || return 1
 
   # Make this configurable?
   restic --password-file=<(echo $backup_storage_password) -v --repo="$volumes_rclone_repo" check || return 1
@@ -320,14 +332,13 @@ function do_volumes_restore! {
   restic --password-file=<(echo $backup_storage_password) -v --repo="$volumes_rclone_repo" restore \
            latest --target="$restore_folder_path" || return 1
 
-
   # Mount restore folder and docker volumes in container, and then do restoration
   restore_log=$(docker run --rm --name "restore" \
     $volumes_arg_list \
     -v "$restore_folder_path:/restore/" \
     alpine:latest /bin/ash -e -c "
-      rm -rf $mounted_dir_list
-      for v in $volumes_list; do
+      rm -rf $mounted_dir_list_with_glob
+      for v in $(echo $volumes_list); do
         cp -r /restore/\${v}/* /\${v}/
       done
   ") || {
@@ -345,7 +356,7 @@ function do_volumes_restore! {
   return 0
 }
 
-function do_db_backup! {
+do_db_backup!() {
   if [ -z "$db_rclone_repo" ]; then
     echo "Skipping db backup"
     return 0
@@ -412,7 +423,7 @@ function do_db_backup! {
   return 0
 }
 
-function do_db_restore! {
+do_db_restore!() {
   if [ -z "$db_rclone_repo" ]; then
     echo "Skipping db restore"
     return 0
@@ -433,15 +444,10 @@ function do_db_restore! {
     mysql_id=$(get_mysql_container_id) || return 1
     copy_mysql_credentials_to_container $mysql_id --restore || return 1
 
-    cleanup_restore() {
-      rm -rf $restore_folder_path
-    }
-
     # Run restore
     # also ensure what config file removed fron container
     docker exec -i $mysql_id sh -c "mysql --defaults-extra-file=/${mysql_credentials_config_name}" \
       < ${restore_folder_path}/${mysql_backup_file_name} || {
-        cleanup_restore
         echo_err "mysql restore failed"
         return 1
     }

@@ -1,9 +1,23 @@
 #!/usr/bin/env bash
 
+# TODO:
+# - password generating is insecure
+# - load docker daemon config
+# - local secrets folder via argument / env
+
+# TODO_QUESTION:
+# - what about local machine backup / restore?
+
+# TODO_MAYBE_V0.2:
+# - add restore snapshot name in notifications
+# - multiple backup repositories for each target
+# - add restory data only flag (just download from cloud, do not do restore)
+# - add option to disable root login after setup
+
 set -e
 set -o pipefail
 
-umask 077
+umask o=rwx,go=
 
 # TUI text color helpers
 echo_ok() { echo -e '\033[1;32m'"$1"'\033[0m'; }
@@ -14,14 +28,6 @@ fatal_err() {
   echo_err "$1"
   exit 1
 }
-
-# TODO:
-# - use [] instead of verbal 'test' command
-# - set umask to 077
-# - load docker daemon config
-# - add option to disable root login after setup
-# - if no backup targets provided - ignore copying
-# - password generating in insecure
 
 # ------------ Provisioning prerequirements check ------------
 
@@ -136,11 +142,10 @@ scp -r "$secrets_dir" "$ssh_connection_string:.secrets"
 # Copy password via ssh to remote host
 # on remote host get password from stdin and write it to file with limited permissions
 echo $remote_user_password | \
-  ssh $ssh_connection_string 'cat > remote_user_password && chmod 500 remote_user_password'
+  ssh $ssh_connection_string 'cat > remote_user_password && chmod 400 remote_user_password'
 
 # Run setup on remote host
 ssh "$ssh_connection_string" /bin/bash -e <<- STR
-  umask 077
   # Update distro and setup required toolset
   apt-get update
   apt-get --yes --force-yes upgrade
@@ -188,7 +193,7 @@ ssh "$ssh_connection_string" /bin/bash -e <<- STR
   mv $(basename "$local_rclone_config_path") /home/$remote_user/.config/rclone/
 
   # Set restiction access for .config folders
-  chmod -R 500 /home/$remote_user/.config
+  chmod -R 700 /home/$remote_user/.config
   chown -R $remote_user:$remote_user /home/$remote_user/.config
 
   # Cleanup
