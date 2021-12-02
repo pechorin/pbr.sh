@@ -5,6 +5,7 @@
 # - add secrets/config generator for new projects
 # - think about api
 # - add -h / usage
+# - rename secrets to config? (подумать над апи)
 
 # TODO_QUESTION:
 # - what about local machine backup / restore?
