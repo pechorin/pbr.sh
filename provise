@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 
 # TODO:
-# - add cron config
 # - add secrets/config generator for new projects
 # - think about api
 # - add -h / usage
@@ -75,6 +74,10 @@ check_local_setup! () {
   local_rclone_config_path=${local_rclone_config_path:-~/.config/rclone/rclone.conf}
   [ -f "${local_rclone_config_path}" ] || \
     fatal_err "local user rclone config not found at $local_rclone_config_path"
+
+  # set backup cron time
+  host_backup_cron_time=${backup_cron_time:-"30 0 * * *"}
+  [ -n "$host_backup_cron_time" ] || fatal_err "Cron time not confgiured"
 }
 
 check_remote_conntection! () {
@@ -228,7 +231,7 @@ provise! () {
     mv ./.secrets/ /home/$remote_user/.config/
 
     # Set backup script execution via cron
-    echo "30 0 * * * /home/$remote_user/backup /home/$remote_user/.config/.secrets/" > cronfile
+    echo "$host_backup_cron_time /home/$remote_user/backup /home/$remote_user/.config/.secrets/" > cronfile
     crontab -u $remote_user cronfile; rm -f cronfile
 
     # Restart out services so new upload configs will be enabled
