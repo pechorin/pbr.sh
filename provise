@@ -2,6 +2,9 @@
 
 # TODO:
 # - add cron config
+# - add secrets/config generator for new projects
+# - think about api
+# - add -h / usage
 
 # TODO_QUESTION:
 # - what about local machine backup / restore?
