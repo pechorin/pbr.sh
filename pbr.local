@@ -2,6 +2,7 @@
 
 # TODO:
 # - add secrets/config generator for new projects
+# - check for miss-host
 # - think about api
 # - add -h / usage
 # - rename secrets to config? (подумать над апи)
@@ -62,7 +63,7 @@ check_local_setup! () {
   [ -f "$sshd_config_path" ] || fatal_err "$sshd_config_path missing"
 
   # check backup script
-  backup_script_path="${script_dir}/backup"
+  backup_script_path="${script_dir}/prb.host"
   [ -f "$backup_script_path" ] || fatal_err "$backup_script_path missing"
 
   # check local user public key
@@ -216,8 +217,8 @@ provise! () {
           $(basename "$local_rclone_config_path")
 
     # Move backup script to host user home dir
-    chmod 500 ./backup
-    chown $remote_user:$remote_user ./backup
+    chmod 500 ./pbr.host
+    chown $remote_user:$remote_user ./pbr.host
     mv ./backup /home/$remote_user/
 
     # Move server configs to specified paths
@@ -231,7 +232,7 @@ provise! () {
     mv ./.secrets/ /home/$remote_user/.config/
 
     # Set backup script execution via cron
-    echo "$host_backup_cron_time /home/$remote_user/backup /home/$remote_user/.config/.secrets/" > cronfile
+    echo "$host_backup_cron_time /home/$remote_user/pbr.host /home/$remote_user/.config/.secrets/" > cronfile
     crontab -u $remote_user cronfile; rm -f cronfile
 
     # Restart out services so new upload configs will be enabled
@@ -240,13 +241,50 @@ provise! () {
 STR
 }
 
+init_config! () {
+  [ -z "$1" ] && fatal_err "secrets path not provided via argument"
+  [ -d "$1" ] || fatal_err "provided path not a directory: $1"
+
+  script_dir=$(dirname $0)
+  possible_path="$(realpath "$1")/pbr.secrets"
+  proto_path="${script_dir}/pbr.secrets.example"
+
+  [ -d "$possible_path" ] && \
+    fatal_err "secrets directory on $possible_path already initialized"
+
+  [ -d "$proto_path" ] || \
+    fatal_err "proto cofig missing under $proto_path"
+
+  mkdir -v $possible_path
+  cp -vr $proto_path/* $possible_path
+
+  echo_warn "Secrets folder initialized in $possible_path"
+  echo_warn "Please don't forget to add pbr.secrets folder to .gitignore"
+}
+
+# Execution part
 echo_ok "Starting pbr.sh"
-echo_warn "Checking configuration"
 
-check_local_setup!
-check_remote_conntection!
-check_backup_config!
+if [ "$1" = "provise" ]; then
+  current_action="provise"
+elif [ "$1" = "init-secrets" ]; then
+  current_action="init-secrets"
+else
+  # TODO: add usage
+  echo_err "action not provided: pbr.local provise"
+  exit 1
+fi
 
-echo_ok "Checking complete"
+if [ "$current_action" = "provise" ]; then
+  echo_warn "Checking configuration"
 
-provise!
+  check_local_setup!
+  check_remote_conntection!
+  check_backup_config!
+
+  echo_ok "Checking complete"
+
+  provise!
+elif  [ "$current_action" = "init-secrets" ]; then
+  init_config! "$2"
+fi
