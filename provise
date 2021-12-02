@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 
 # TODO:
-# - load docker daemon config
-# - local secrets folder via argument / env
 # - add cron config
 
 # TODO_QUESTION:
@@ -32,14 +30,20 @@ fatal_err() {
 
 check_local_setup! () {
   script_dir=$(dirname $0)
-  secrets_dir="$script_dir/secrets"
-  config_path="$script_dir/secrets/settings.conf"
+
+  if [ -n "$SECRETS_DIR" ]; then
+    secrets_dir=$(realpath "$SECRETS_DIR")
+  else
+    secrets_dir=$(realpath "$script_dir/secrets")
+  fi
+
+  config_path="$secrets_dir/settings.conf"
 
   # Check secrets directory
   [ -d "$secrets_dir" ] || fatal_err "$secrets_dir directory not found"
 
   # Check and load configuration file
-  [ -f "$config_path" ] || fatal_err "Config file missing at path: $config_path"
+  [ -r "$config_path" ] || fatal_err "Config file missing at path: $config_path"
 
   source "$config_path"
 
@@ -51,11 +55,8 @@ check_local_setup! () {
   done
 
   # check for all required server configuration files are present
-  sshd_config_path="${script_dir}/server_configs/sshd_config"
+  sshd_config_path="${script_dir}/common/sshd_config"
   [ -f "$sshd_config_path" ] || fatal_err "$sshd_config_path missing"
-
-  dockerd_config_path="${script_dir}/server_configs/docker/daemon.json"
-  [ -f "$dockerd_config_path" ] || fatal_err "$dockerd_config_path missing"
 
   # check backup script
   backup_script_path="${script_dir}/backup"
@@ -128,7 +129,6 @@ provise! () {
   # Copy all configs and scripts to remote
   scp "$backup_script_path"       \
       "$sshd_config_path"         \
-      "$dockerd_config_path"      \
       "$local_public_key_path"    \
       "$local_rclone_config_path" \
       "$ssh_connection_string:."
@@ -140,8 +140,19 @@ provise! () {
   echo $remote_user_password | \
     ssh $ssh_connection_string 'cat > remote_user_password && chmod 400 remote_user_password'
 
+  # Construct docker daemon configuration with user namespace remapping enabled
+  # If no daemon.json file stored in secrets folder
+  if ! [ -r "$secrets_dir/daemon.json" ]; then
+    daemon_config="{\"userns-remap\":\"${remote_user}\"}"
+    echo $daemon_config | \
+      ssh $ssh_connection_string 'cat > daemon.json'
+  fi
+
   # Run setup on remote host
-  ssh "$ssh_connection_string" /bin/bash -e <<- STR
+  ssh "$ssh_connection_string" /bin/bash <<- STR
+    set -e
+    set -o pipefail
+
     # Update distro and setup required toolset
     apt-get update
     apt-get --yes --force-yes upgrade
@@ -204,7 +215,8 @@ provise! () {
 
     # Move server configs to specified paths
     mv ./sshd_config /etc/ssh/sshd_config
-    mv ./daemon.json /etc/docker/daemon.json
+    [ -f ./daemon.json ] && mv ./daemon.json /etc/docker/daemon.json
+    [ -f ./.secrets/daemon.json ] && mv ./.secrets/daemon.json /etc/docker/daemon.json
 
     # Move secrets to user home dir and set restrictive access
     chmod -R 500 ./.secrets
@@ -218,8 +230,6 @@ provise! () {
     # Restart out services so new upload configs will be enabled
     service sshd restart
     service docker restart
-
-    # su $remote_user -c '~/backup'
 STR
 }
 
