@@ -5,6 +5,20 @@ set -o pipefail
 
 umask o=rwx,go=
 
+show_help() {
+    # taken from https://stackoverflow.com/users/4307337/vincent-stans
+    echo "# pbr.host — host machine pbr.sh"
+    echo ""
+    echo "Usage: $0 {backup|restore|help}"
+    echo
+    echo "Examples:"
+    echo
+    echo "  pbr.host backup                        - do backup"
+    echo "  pbr.host restore                       - do restore"
+    echo "  pbr.host help                          - display help message"
+    echo
+}
+
 # Echo error string to stderr
 # Exit if not error message provided
 echo_err() {
@@ -27,8 +41,8 @@ done
 
 echo "Running pbr.sh (on host machine)"
 
-# TODO: or use value from $1 ?
-source ~/.config/.secrets/settings.conf
+secrets_file=${SECRETS_FILE:-~/.config/.secretes/settings.conf}
+source $secrets_file
 
 # Regexp for removing unnecessary lines from logs (for notifications)
 backup_log_start_pattern="using parent|start scan"
@@ -470,6 +484,9 @@ if [ "$1" = "backup" ]; then
   current_action="backup"
 elif [ "$1" = "restore" ]; then
   current_action="restore"
+elif [ "$1" = "help" ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+  show_help
+  exit 1
 else
   # TODO: add usage
   echo_err "action not provided: pbr.host backup"
@@ -483,7 +500,7 @@ run!() {
   if [ "$current_action" = "restore" ]; then
     do_volumes_restore! || return 1
     do_db_restore! || return 1
-  else
+  elif  [ "$current_action" = "backup" ]; then
     do_volumes_backup! || return 1
     do_db_backup! || return 1
   fi

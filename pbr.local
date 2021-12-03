@@ -1,20 +1,33 @@
 #!/usr/bin/env bash
 
 # TODO:
-# - add secrets/config generator for new projects
 # - check for miss-host
-# - think about api
-# - add -h / usage
-# - rename secrets to config? (подумать над апи)
-
-# TODO_QUESTION:
-# - what about local machine backup / restore?
+# - add host folders backup (suitable for local backups)
+# - multiple backup repositories for each target
 
 # TODO_MAYBE_V0.2:
 # - add restore snapshot name in notifications
-# - multiple backup repositories for each target
 # - add restory data only flag (just download from cloud, do not do restore)
 # - add option to disable root login after setup
+
+show_help() {
+    # taken from https://stackoverflow.com/users/4307337/vincent-stans
+    echo "# pbr.local — local machine pbr.sh"
+    echo ""
+    echo "Usage: $0 {provise|init-secrets|help}"
+    echo
+    echo "Examples:"
+    echo
+    echo "  pbr.local init-secrets ~/my-project    - create secrets folder for project in ~/my-project"
+    echo
+
+    echo "  pbr.local provise ./my-project         - do remote machine setup and configuration"
+    echo "  pbr.local provise                      - do remote machine setup and configuration,"
+    echo "                                           but look for secrets in current path"
+    echo
+    echo "  pbr.local help                         - display help message"
+    echo
+}
 
 set -e
 set -o pipefail
@@ -263,12 +276,14 @@ init_config! () {
 }
 
 # Execution part
-echo_ok "Starting pbr.sh"
+echo_ok "Running pbr.sh (on local machine)"
 
 if [ "$1" = "provise" ]; then
   current_action="provise"
 elif [ "$1" = "init-secrets" ]; then
   current_action="init-secrets"
+elif [ "$1" = "help" ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+  current_action="help"
 else
   # TODO: add usage
   echo_err "action not provided: pbr.local provise"
@@ -287,4 +302,6 @@ if [ "$current_action" = "provise" ]; then
   provise!
 elif  [ "$current_action" = "init-secrets" ]; then
   init_config! "$2"
+elif  [ "$current_action" = "help" ]; then
+  show_help
 fi
