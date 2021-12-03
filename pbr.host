@@ -57,6 +57,7 @@ mysql_backup_file_name="docker_mysql_dump.sql"
 # All working files used in sciprt should be listed in this array,
 # so we can clean them up after script error / exit
 working_files=()
+is_mysql_credentials_uploaded_to_container=0
 
 # Remove all created working files on script exit
 finalize() {
@@ -69,9 +70,11 @@ finalize() {
   working_files=()
 
   # Remove files from containers
-  mysql_id=$(get_mysql_container_id 2> /dev/null)
-  if [ -n "$mysql_id" ]; then
-    remove_mysql_credentials_from_container $mysql_id
+  if [[ $is_mysql_credentials_uploaded_to_container == 1 ]]; then
+    mysql_id=$(get_mysql_container_id 2> /dev/null)
+    if [ -n "$mysql_id" ]; then
+      remove_mysql_credentials_from_container $mysql_id
+    fi
   fi
 }
 
@@ -241,6 +244,7 @@ copy_mysql_credentials_to_container() {
     ./${mysql_credentials_config_name}
 
   working_files+=("./${mysql_credentials_config_name}")
+  is_mysql_credentials_uploaded_to_container=1
 
   # Copy configuration file to container
   docker cp ./${mysql_credentials_config_name} ${1}:/${mysql_credentials_config_name} || {

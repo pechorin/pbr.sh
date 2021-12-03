@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 
 # TODO:
-# - check for miss-host
+# - add backup api from pbr.local script?
 # - add host folders backup (suitable for local backups)
+# - check for miss-host
 # - multiple backup repositories for each target
 
 # TODO_MAYBE_V0.2:
