@@ -53,6 +53,7 @@ fatal_err() {
 
 check_local_setup! () {
   script_dir=$(dirname $0)
+  script_dir=$(realpath "$script_dir")
 
   [ -d "$1" ] || {
     show_help
@@ -82,7 +83,7 @@ check_local_setup! () {
   [ -f "$sshd_config_path" ] || fatal_err "$sshd_config_path missing"
 
   # check backup script
-  backup_script_path="${script_dir}/prb.host"
+  backup_script_path="${script_dir}/pbr.host"
   [ -f "$backup_script_path" ] || fatal_err "$backup_script_path missing"
 
   # check local user public key
