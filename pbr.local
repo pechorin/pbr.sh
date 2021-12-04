@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
 
 # TODO:
+# - rename volumes_rclone_repo to data_rclone_repo?
 # - add backup api from pbr.local script?
 # - add host folders backup (suitable for local backups)
 # - check for miss-host
 # - multiple backup repositories for each target
 
 # TODO_MAYBE_V0.2:
+# - add email notifications
 # - add restore snapshot name in notifications
 # - add restory data only flag (just download from cloud, do not do restore)
 # - add option to disable root login after setup
 
 show_help() {
-    # taken from https://stackoverflow.com/users/4307337/vincent-stans
-    echo "# pbr.local — local machine pbr.sh"
+    echo "# pbr.sh — provise & backup & restore cycle for small hosts"
+    echo "> pbr.local — local machine pbr.sh"
     echo ""
     echo "Usage: $0 {provise|init-secrets|help}"
     echo

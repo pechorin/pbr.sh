@@ -42,3 +42,7 @@ Run restore on remote machine
 ```bash
 ssh my_user@my_host ./pbr.host restore
 ```
+
+## Configuration
+
+TODO

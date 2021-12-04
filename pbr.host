@@ -6,8 +6,8 @@ set -o pipefail
 umask o=rwx,go=
 
 show_help() {
-    # taken from https://stackoverflow.com/users/4307337/vincent-stans
-    echo "# pbr.host — host machine pbr.sh"
+    echo "# pbr.sh — provise & backup & restore cycle for small hosts"
+    echo "> pbr.host — host machine pbr.sh"
     echo ""
     echo "Usage: $0 {backup|restore|help}"
     echo
