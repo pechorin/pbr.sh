@@ -1,5 +1,5 @@
-# pbr.sh — provise / backup / restore
-## Utility for small hosts with docker setup
+# pbr.sh — provise & backup & restore cycle for small hosts
+## Utility for small hosts provisioning and backuping with easy cmd interface
 
 ### Features
 - Fast bootstraping of ubuntu servers ready for Docker (with one command + config file)
