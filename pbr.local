@@ -17,16 +17,21 @@ show_help() {
     echo ""
     echo "Usage: $0 {provise|init-secrets|help}"
     echo
-    echo "Examples:"
+    echo "Usage example:"
     echo
-    echo "  pbr.local init-secrets ~/my-project    - create secrets folder for project in ~/my-project"
+    echo "1) Create secrets folder in project directory"
     echo
-
-    echo "  pbr.local provise ./my-project         - do remote machine setup and configuration"
-    echo "  pbr.local provise                      - do remote machine setup and configuration,"
-    echo "                                           but look for secrets in current path"
+    echo "   pbr.local init-secrets ~/my-project"
     echo
-    echo "  pbr.local help                         - display help message"
+    echo "                                 - ~/.my-project/pbr.secrets/ folder will be created"
+    echo
+    echo "2) Do configured remote host setup and provisiong"
+    echo
+    echo "   pbr.local provise ./my-project/pbr.secrets/"
+    echo
+    echo "Other commands:"
+    echo
+    echo "   pbr.local help                - display help message"
     echo
 }
 
@@ -49,12 +54,12 @@ fatal_err() {
 check_local_setup! () {
   script_dir=$(dirname $0)
 
-  if [ -n "$SECRETS_DIR" ]; then
-    secrets_dir=$(realpath "$SECRETS_DIR")
-  else
-    secrets_dir=$(realpath "$script_dir/secrets")
-  fi
+  [ -d "$1" ] || {
+    show_help
+    fatal_err "provide secrets directory with second argument in pbr.local provise"
+  }
 
+  secrets_dir=$(realpath "$1")
   config_path="$secrets_dir/settings.conf"
 
   # Check secrets directory
@@ -294,7 +299,7 @@ fi
 if [ "$current_action" = "provise" ]; then
   echo_warn "Checking configuration"
 
-  check_local_setup!
+  check_local_setup! "$2"
   check_remote_conntection!
   check_backup_config!
 

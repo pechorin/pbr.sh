@@ -24,13 +24,13 @@
 
 Generate config (or see example in `secrets.example`)
 ```bash
-./pbr.local init-secrets ~/my-project/secrets/
+./pbr.local init-secrets ~/my-project # ~/my-project/pbr.secrets/ folder will be creted
 ```
 
 Run provise script to bootstrap host and install backup and restore scripts
 
 ```bash
-./pbr.local provise ~/my-project/secrets/
+./pbr.local provise ~/my-project/pbr.secrets/
 ```
 
 Run backup on remote machine
