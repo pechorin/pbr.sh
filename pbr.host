@@ -19,31 +19,6 @@ show_help() {
     echo
 }
 
-# Echo error string to stderr
-# Exit if not error message provided
-echo_err() {
-  [ -z "$1" ] && {
-    echo 'Error message not provided via $1' >&2
-    exit 1
-  }
-
-  printf "$1\n" >&2
-}
-
-# Check for required host toolset
-required_host_programms=(restic curl docker)
-for prog in $required_host_programms; do
-  if ! [ -n "$(command -v $prog)" ]; then
-    echo_err "$prog not installed or missing on host machine"
-    exit 1
-  fi
-done
-
-echo "Running pbr.sh (on host machine)"
-
-secrets_file=${SECRETS_FILE:-~/.config/.secretes/settings.conf}
-source $secrets_file
-
 # Regexp for removing unnecessary lines from logs (for notifications)
 backup_log_start_pattern="using parent|start scan"
 
@@ -58,6 +33,35 @@ mysql_backup_file_name="docker_mysql_dump.sql"
 # so we can clean them up after script error / exit
 working_files=()
 is_mysql_credentials_uploaded_to_container=0
+
+# Echo error string to stderr
+# Exit if not error message provided
+echo_err() {
+  [ -z "$1" ] && {
+    echo 'Error message not provided via $1' >&2
+    exit 1
+  }
+
+  printf "$1\n" >&2
+}
+
+# TODO: ability to see help here (before any checks)
+
+# Check for required host toolset
+check_host() {
+  required_host_programms=(restic curl docker)
+  for prog in $required_host_programms; do
+    if ! [ -n "$(command -v $prog)" ]; then
+      echo_err "$prog not installed or missing on host machine"
+      exit 1
+    fi
+  done
+}
+
+load_config() {
+  secrets_file=${SECRETS_FILE:-~/.config/.secretes/settings.conf}
+  source $secrets_file
+}
 
 # Remove all created working files on script exit
 finalize() {
@@ -81,7 +85,7 @@ finalize() {
 trap finalize EXIT ERR
 
 # $1 -> repository name
-init_backup_repository!() {
+init_backup_repository() {
   # if repo not exists
   if ! restic --password-file=<(echo $backup_storage_password) --repo="$1" cat config > /dev/null; then
     # then init new one
@@ -262,7 +266,7 @@ remove_mysql_credentials_from_container() {
 }
 
 # $1 -> volumes list to check
-check_docker_volumes_presence!() {
+check_docker_volumes_presence() {
   [ -z "$1" ] && { echo_err "Volumes list not provided in $1" && return 1; }
 
   volumes_list="$(docker volume list -q)" || {
@@ -280,18 +284,39 @@ check_docker_volumes_presence!() {
   return 0
 }
 
-do_volumes_backup!() {
-  if [ -z "$backup_docker_volumes" ] && [ -z "$volumes_rclone_repo" ]; then
-    echo "Skipping volumes backup" && return 0
+do_data_backup() {
+  if [ -z "$volumes_rclone_repo" ]; then
+    echo "Skipping data backup, volumes_rclone_repo not configured"
+    return 0
   fi
 
-  init_backup_repository! "$volumes_rclone_repo" || return 1
+  if [ -z "$docker_backup_volumes" ] && [ -z "$host_backup_folders" ]; then
+    echo "Skipping data backup, docker_backup_volumes nor host_backup_folders not set"
+    return 0
+  fi
 
-  volumes_list=$(split_by_comma $backup_docker_volumes) || return 1
-  check_docker_volumes_presence! "$volumes_list" || return 1
+  init_backup_repository "$volumes_rclone_repo" || return 1
 
-  volumes_arg_list=$(volumes_string_to_docker_volumes_arg $backup_docker_volumes --readonly) || return 1
-  mounted_dir_list=$(volumes_string_to_mounted_dir_list $backup_docker_volumes) || return 1
+  volumes_list=()
+  volumes_arg_list=()
+  mounted_dir_list=()
+
+  for $source in docker_backup_volumes host_backup_folders; do
+    local tmp_list
+
+    tmp_list=$(split_by_comma ${!source}) || return 1
+    if [ "$source" = "docker_backup_volumes" ]; then
+      check_docker_volumes_presence "$tmp_list" || return 1
+    fi
+
+    volumes_list+=(${tmp_list[@]})
+
+    tmp_list=$(volumes_string_to_docker_volumes_arg ${!source} --readonly) || return 1
+    volumes_arg_list+=(${tmp_list[@]})
+
+    tmp_list=$(volumes_string_to_mounted_dir_list ${!source}) || return 1
+    mounted_dir_list+=(${tmp_list[@]})
+  done
 
   # Bakcup command will run in container:
   backup_command="restic -v --password-file=<(echo \$backup_storage_password) \
@@ -327,21 +352,23 @@ do_volumes_backup!() {
   return 0
 }
 
-do_volumes_restore!() {
-  if [ -z "$backup_docker_volumes" ] && [ -z "$volumes_rclone_repo" ]; then
-    echo "Skipping docker volumes restore"
+do_data_restore() {
+  if [ -z "$volumes_rclone_repo" ]; then
+    echo "Skipping data restore, volumes_rclone_repo not configured"
     return 0
   fi
 
-  volumes_list=$(split_by_comma $backup_docker_volumes) || return 1
-  check_docker_volumes_presence! "$volumes_list" || return 1
+  if [ -n "$docker_backup_volumes" ]; then
+    volumes_list=$(split_by_comma "$docker_backup_volumes") || return 1
+    check_docker_volumes_presence "$volumes_list" || return 1
+
+    volumes_arg_list=$(volumes_string_to_docker_volumes_arg $docker_backup_volumes) || return 1
+    mounted_dir_list=$(volumes_string_to_mounted_dir_list $docker_backup_volumes) || return 1
+    mounted_dir_list_with_glob=$(volumes_string_to_mounted_dir_list $docker_backup_volumes --with-path-glob-ending) || return 1
+  fi
 
   restore_folder_path=$(prepare_restore_folder)
   working_files+=($restore_folder_path)
-
-  volumes_arg_list=$(volumes_string_to_docker_volumes_arg $backup_docker_volumes) || return 1
-  mounted_dir_list=$(volumes_string_to_mounted_dir_list $backup_docker_volumes) || return 1
-  mounted_dir_list_with_glob=$(volumes_string_to_mounted_dir_list $backup_docker_volumes --with-path-glob-ending) || return 1
 
   # Make this configurable?
   restic --password-file=<(echo $backup_storage_password) -v --repo="$volumes_rclone_repo" check || return 1
@@ -350,22 +377,32 @@ do_volumes_restore!() {
   restic --password-file=<(echo $backup_storage_password) -v --repo="$volumes_rclone_repo" restore \
            latest --target="$restore_folder_path" || return 1
 
-  # Mount restore folder and docker volumes in container, and then do restoration
-  restore_log=$(docker run --rm --name "restore" \
-    $volumes_arg_list \
-    -v "$restore_folder_path:/restore/" \
-    alpine:latest /bin/ash -e -c "
-      rm -rf $mounted_dir_list_with_glob
-      for v in $(echo $volumes_list); do
-        cp -r /restore/\${v}/* /\${v}/
-      done
-  ") || {
-    echo_err "docker volumes restore failed"
-    return 1
-  }
+  if [ -n "$docker_backup_volumes" ]; then
+    # Mount restore folder and docker volumes in container, and then do restoration
+    restore_log=$(docker run --rm --name "restore" \
+      $volumes_arg_list \
+      -v "$restore_folder_path:/restore/" \
+      alpine:latest /bin/ash -e -c "
+        rm -rf $mounted_dir_list_with_glob
+        for v in $(echo $volumes_list); do
+          cp -r /restore/\${v}/* /\${v}/
+        done
+    ") || {
+      echo_err "docker volumes restore failed"
+      return 1
+    }
 
-  # Log to stdout
-  printf "$restore_log\n"
+    # Log to stdout
+    printf "$restore_log\n"
+  fi
+
+  if [ -n "$host_backup_folders" ]; then
+    folders_list=$(split_by_comma "$host_backup_folders") || return 1
+
+    for folder in ${folder_list[@]}; do
+      # TODO
+    done
+  fi
 
   # Count restored size and remove restore folder
   restored_size=($(du -sh $restore_folder_path))
@@ -374,13 +411,13 @@ do_volumes_restore!() {
   return 0
 }
 
-do_db_backup!() {
+do_db_backup() {
   if [ -z "$db_rclone_repo" ]; then
     echo "Skipping db backup"
     return 0
   fi
 
-  init_backup_repository! "$db_rclone_repo" || return 1
+  init_backup_repository "$db_rclone_repo" || return 1
 
   dumps=()
 
@@ -441,7 +478,7 @@ do_db_backup!() {
   return 0
 }
 
-do_db_restore!() {
+do_db_restore() {
   if [ -z "$db_rclone_repo" ]; then
     echo "Skipping db restore"
     return 0
@@ -493,26 +530,32 @@ elif [ "$1" = "help" ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
   exit 1
 else
   # TODO: add usage
-  echo_err "action not provided: pbr.host backup"
+  echo_err "action not provided: pbr.host backup\n"
+  show_help
   exit 1
 fi
 
-run!() {
+run() {
   echo -e "\n$log_separator"
   echo "Starting $current_action at $(date)"
 
   if [ "$current_action" = "restore" ]; then
-    do_volumes_restore! || return 1
-    do_db_restore! || return 1
+    do_data_restore || return 1
+    do_db_restore || return 1
   elif  [ "$current_action" = "backup" ]; then
-    do_volumes_backup! || return 1
-    do_db_backup! || return 1
+    do_data_backup || return 1
+    do_db_backup || return 1
   fi
 
   echo -e "$current_action completed at $(date)"
 }
 
-run! $1 &>> $log_file_path || {
+echo "Running pbr.sh (on host machine)"
+
+check_host
+load_config
+
+run $1 &>> $log_file_path || {
   notify_to_telegram "$current_action script failed" \
                      "inspect errors on host ~/$log_file_path"
 }

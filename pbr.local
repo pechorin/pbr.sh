@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 
 # TODO:
+# - add local restore
 # - rename volumes_rclone_repo to data_rclone_repo?
-# - add backup api from pbr.local script?
-# - add host folders backup (suitable for local backups)
-# - check for miss-host
+# - check for miss-host (add host-file identificator)
 # - multiple backup repositories for each target
 
 # TODO_MAYBE_V0.2:
+# - add configurable callbacks functions
 # - add email notifications
 # - add restore snapshot name in notifications
 # - add restory data only flag (just download from cloud, do not do restore)
@@ -17,7 +17,7 @@ show_help() {
     echo "# pbr.sh — provise & backup & restore cycle for small hosts"
     echo "> pbr.local — local machine pbr.sh"
     echo ""
-    echo "Usage: $0 {provise|init-secrets|help}"
+    echo "Usage: $0 {provise|init-secrets|host-backup|host-restore|help}"
     echo
     echo "Usage example:"
     echo
@@ -25,11 +25,19 @@ show_help() {
     echo
     echo "   pbr.local init-secrets ~/my-project"
     echo
-    echo "                                 - ~/.my-project/pbr.secrets/ folder will be created"
+    echo "   # As result: ~/.my-project/pbr.secrets/ folder will be created"
     echo
     echo "2) Do configured remote host setup and provisiong"
     echo
     echo "   pbr.local provise ./my-project/pbr.secrets/"
+    echo
+    echo "3) Backup remote host"
+    echo
+    echo "   pbr.local host-backup ./my-project/pbr.secrets/"
+    echo
+    echo "4) Restore remote host"
+    echo
+    echo "   pbr.local host-restore ./my-project/pbr.secrets/"
     echo
     echo "Other commands:"
     echo
@@ -53,13 +61,13 @@ fatal_err() {
   exit 1
 }
 
-check_local_setup! () {
+check_local_setup() {
   script_dir=$(dirname $0)
   script_dir=$(realpath "$script_dir")
 
   [ -d "$1" ] || {
     show_help
-    fatal_err "provide secrets directory with second argument in pbr.local provise"
+    fatal_err "provide secrets directory with second argument in pbr.local"
   }
 
   secrets_dir=$(realpath "$1")
@@ -103,18 +111,18 @@ check_local_setup! () {
   [ -n "$host_backup_cron_time" ] || fatal_err "Cron time not confgiured"
 }
 
-check_remote_conntection! () {
+check_remote_conntection() {
   # test connection to remote host via ssh
   if ! (ssh -q "$ssh_connection_string" exit); then
     fatal_err "Connection to remote via ssh $ssh_connection_string failed"
   fi
 }
 
-check_backup_config! () {
+check_backup_config() {
   if [ -n "$backup_name" ]; then
     # check volumes setting
-    [ -n "$backup_docker_volumes" ] && [ -z "$volumes_rclone_repo" ] && \
-      fatal_err "backup_docker_volumes defined, but volumes_rclone_repo isn't"
+    [ -n "$docker_backup_volumes" ] && [ -z "$volumes_rclone_repo" ] && \
+      fatal_err "docker_backup_volumes defined, but volumes_rclone_repo isn't"
 
     # check docker mysql settings
     if [ -n "$docker_mysql_db_names" ]; then
@@ -150,7 +158,15 @@ check_backup_config! () {
   fi
 }
 
-provise! () {
+do_host_backup() {
+  ssh -l $remote_user $ssh_connection_string ./pbr.host backup
+}
+
+do_host_restore() {
+  ssh -l $remote_user $ssh_connection_string ./pbr.host restore
+}
+
+provise() {
   if [ -z "$remote_user_password" ]; then
     # Ask for remote user password if password not defined in config file
     read -s -p "Enter remote user password: " remote_user_password
@@ -169,6 +185,9 @@ provise! () {
   # on remote host get password from stdin and write it to file with limited permissions
   echo $remote_user_password | \
     ssh $ssh_connection_string 'cat > remote_user_password && chmod 400 remote_user_password'
+
+  # Mark machine as host via special file
+  echo "host" | ssh $ssh_connection_string 'cat > .pbr-host && chmod 400 .pbr-host'
 
   # Construct docker daemon configuration with user namespace remapping enabled
   # If no daemon.json file stored in secrets folder
@@ -241,7 +260,7 @@ provise! () {
     # Move backup script to host user home dir
     chmod 500 ./pbr.host
     chown $remote_user:$remote_user ./pbr.host
-    mv ./backup /home/$remote_user/
+    mv ./pbr.host /home/$remote_user/
 
     # Move server configs to specified paths
     mv ./sshd_config /etc/ssh/sshd_config
@@ -254,7 +273,7 @@ provise! () {
     mv ./.secrets/ /home/$remote_user/.config/
 
     # Set backup script execution via cron
-    echo "$host_backup_cron_time /home/$remote_user/pbr.host /home/$remote_user/.config/.secrets/" > cronfile
+    echo "$host_backup_cron_time /home/$remote_user/pbr.host backup" > cronfile
     crontab -u $remote_user cronfile; rm -f cronfile
 
     # Restart out services so new upload configs will be enabled
@@ -263,7 +282,7 @@ provise! () {
 STR
 }
 
-init_config! () {
+init_config() {
   [ -z "$1" ] && fatal_err "secrets path not provided via argument"
   [ -d "$1" ] || fatal_err "provided path not a directory: $1"
 
@@ -291,26 +310,37 @@ if [ "$1" = "provise" ]; then
   current_action="provise"
 elif [ "$1" = "init-secrets" ]; then
   current_action="init-secrets"
+elif [ "$1" = "host-backup" ]; then
+  current_action="host-backup"
+elif [ "$1" = "host-restore" ]; then
+  current_action="host-restore"
 elif [ "$1" = "help" ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
   current_action="help"
 else
   # TODO: add usage
-  echo_err "action not provided: pbr.local provise"
+  echo_err "action not provided: pbr.local provise\n"
+  show_help
   exit 1
 fi
 
 if [ "$current_action" = "provise" ]; then
   echo_warn "Checking configuration"
 
-  check_local_setup! "$2"
-  check_remote_conntection!
-  check_backup_config!
+  check_local_setup "$2"
+  check_remote_conntection
+  check_backup_config
 
   echo_ok "Checking complete"
 
-  provise!
+  provise
 elif  [ "$current_action" = "init-secrets" ]; then
-  init_config! "$2"
+  init_config "$2"
+elif  [ "$current_action" = "host-backup" ]; then
+  check_local_setup "$2"
+  do_host_backup
+elif  [ "$current_action" = "host-restore" ]; then
+  check_local_setup "$2"
+  do_host_restore
 elif  [ "$current_action" = "help" ]; then
   show_help
 fi
