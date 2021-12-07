@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
 
 # TODO:
-# - find better name for .pbr-host
 # - add local restore
-# - rename volumes_rclone_repo to data_rclone_repo?
 # - check for miss-host (add host-file identificator)
-# - multiple backup repositories for each target
 
 # TODO_MAYBE_V0.2:
-# - add configurable callbacks functions
-# - add email notifications
-# - add restore snapshot name in notifications
-# - add restory data only flag (just download from cloud, do not do restore)
-# - add option to disable root login after setup
+# - multiple backup repositories for each target
+# - ability to provie custom uid/guid for backup containers?
+# - configurable callbacks functions
+# - email notifications
+# - restore snapshot name in notifications
+# - restory data only flag (just download from cloud, do not do restore)
+# - option to disable root login after setup
 
 show_help() {
     echo "# pbr.sh — provise & backup & restore cycle for small hosts"
@@ -122,8 +121,8 @@ check_remote_conntection() {
 check_backup_config() {
   if [ -n "$backup_name" ]; then
     # check volumes setting
-    [ -n "$docker_backup_volumes" ] && [ -z "$volumes_rclone_repo" ] && \
-      fatal_err "docker_backup_volumes defined, but volumes_rclone_repo isn't"
+    [ -n "$docker_backup_volumes" ] && [ -z "$data_rclone_repo" ] && \
+      fatal_err "docker_backup_volumes defined, but data_rclone_repo isn't"
 
     # check docker mysql settings
     if [ -n "$docker_mysql_db_names" ]; then
@@ -188,7 +187,7 @@ provise() {
     ssh $ssh_connection_string 'cat > remote_user_password && chmod 400 remote_user_password'
 
   # Mark machine as host via special file
-  echo "host" | ssh $ssh_connection_string 'cat > .pbr-host'
+  ssh -l $remote_user $ssh_connection_string 'touch .pbr-host'
 
   # Construct docker daemon configuration with user namespace remapping enabled
   # If no daemon.json file stored in secrets folder
@@ -259,9 +258,9 @@ provise() {
           $(basename "$local_rclone_config_path")
 
     # Move backup script to host user home dir
-    chmod 500 ./pbr.host ./.pbr-host
-    chown $remote_user:$remote_user ./pbr.host ./.pbr-host
-    mv ./pbr.host ./.pbr-host /home/$remote_user/
+    chmod 500 ./pbr.host
+    chown $remote_user:$remote_user ./pbr.host
+    mv ./pbr.host /home/$remote_user/
 
     # Move server configs to specified paths
     mv ./sshd_config /etc/ssh/sshd_config
