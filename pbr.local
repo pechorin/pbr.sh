@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 # TODO:
+# - find better name for .pbr-host
 # - add local restore
 # - rename volumes_rclone_repo to data_rclone_repo?
 # - check for miss-host (add host-file identificator)
@@ -187,7 +188,7 @@ provise() {
     ssh $ssh_connection_string 'cat > remote_user_password && chmod 400 remote_user_password'
 
   # Mark machine as host via special file
-  echo "host" | ssh $ssh_connection_string 'cat > .pbr-host && chmod 400 .pbr-host'
+  echo "host" | ssh $ssh_connection_string 'cat > .pbr-host'
 
   # Construct docker daemon configuration with user namespace remapping enabled
   # If no daemon.json file stored in secrets folder
@@ -258,9 +259,9 @@ provise() {
           $(basename "$local_rclone_config_path")
 
     # Move backup script to host user home dir
-    chmod 500 ./pbr.host
-    chown $remote_user:$remote_user ./pbr.host
-    mv ./pbr.host /home/$remote_user/
+    chmod 500 ./pbr.host ./.pbr-host
+    chown $remote_user:$remote_user ./pbr.host ./.pbr-host
+    mv ./pbr.host ./.pbr-host /home/$remote_user/
 
     # Move server configs to specified paths
     mv ./sshd_config /etc/ssh/sshd_config

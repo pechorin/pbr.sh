@@ -59,7 +59,7 @@ check_host() {
 }
 
 load_config() {
-  secrets_file=${SECRETS_FILE:-~/.config/.secretes/settings.conf}
+  secrets_file=${SECRETS_FILE:-~/.config/.secrets/settings.conf}
   source $secrets_file
 }
 
@@ -172,9 +172,23 @@ volumes_string_to_mounted_dir_list() {
   for v in $volumes_list; do
     if [ "$2" = "--with-path-glob-ending" ]; then
       dir_list+=("/$v/*")
+    elif [ "$2" = "--without-leading-slash" ]; then
+      dir_list+=("$v/*")
     else
       dir_list+=("/$v")
     fi
+  done
+
+  echo ${dir_list[@]}
+  return 0
+}
+
+folders_string_to_mounted_dir_list() {
+  volumes_list=$(split_by_comma "$1") || return 1
+  dir_list=()
+
+  for v in $volumes_list; do
+    dir_list+=("/host$v")
   done
 
   echo ${dir_list[@]}
@@ -198,6 +212,22 @@ volumes_string_to_docker_volumes_arg() {
     else
       args_list+=("$v:/$v/")
     fi
+  done
+
+  echo ${args_list[@]}
+  return 0
+}
+
+# Make host folders mount argument list
+# convert from "/home/user/folder" to
+#   -v /home/user/folder:/host/home/user/folder/
+folders_string_to_docker_volumes_arg() {
+  volumes_list=$(split_by_comma "$1") || return 1
+  args_list=()
+
+  for v in $volumes_list; do
+    args_list+=("-v")
+    args_list+=("$v:/host$v:ro")
   done
 
   echo ${args_list[@]}
@@ -301,27 +331,38 @@ do_data_backup() {
   volumes_arg_list=()
   mounted_dir_list=()
 
-  for $source in docker_backup_volumes host_backup_folders; do
-    local tmp_list
+  if [ -n "$docker_backup_volumes" ]; then
+    local tmp_list=()
 
-    tmp_list=$(split_by_comma ${!source}) || return 1
-    if [ "$source" = "docker_backup_volumes" ]; then
-      check_docker_volumes_presence "$tmp_list" || return 1
-    fi
-
+    tmp_list=$(split_by_comma "$docker_backup_volumes") || return 1
     volumes_list+=(${tmp_list[@]})
 
-    tmp_list=$(volumes_string_to_docker_volumes_arg ${!source} --readonly) || return 1
+    check_docker_volumes_presence "$tmp_list" || return 1
+
+    tmp_list=$(volumes_string_to_docker_volumes_arg "$docker_backup_volumes" --readonly) || return 1
     volumes_arg_list+=(${tmp_list[@]})
 
-    tmp_list=$(volumes_string_to_mounted_dir_list ${!source}) || return 1
+    tmp_list=$(volumes_string_to_mounted_dir_list "$docker_backup_volumes") || return 1
     mounted_dir_list+=(${tmp_list[@]})
-  done
+  fi
+
+  if [ -n "$host_backup_folders" ]; then
+    local tmp_list=()
+
+    tmp_list=$(split_by_comma "$host_backup_folders") || return 1
+    volumes_list+=(${tmp_list[@]})
+
+    tmp_list=$(folders_string_to_docker_volumes_arg "$host_backup_folders") || return 1
+    volumes_arg_list+=(${tmp_list[@]})
+
+    tmp_list=$(folders_string_to_mounted_dir_list "$host_backup_folders") || return 1
+    mounted_dir_list+=(${tmp_list[@]})
+  fi
 
   # Bakcup command will run in container:
   backup_command="restic -v --password-file=<(echo \$backup_storage_password) \
                             --host=\$backup_name \
-                            --repo=\$volumes_rclone_repo backup $mounted_dir_list"
+                            --repo=\$volumes_rclone_repo backup ${mounted_dir_list[@]}"
 
   # Run backup inside container
   # - mount backup volumes
@@ -330,7 +371,7 @@ do_data_backup() {
   # - run backup inside alpine container, but use bash instead of ash internally
   #   because we need bash process substituion <() for safety providing password to processes
   backup_log=$(docker run --rm --name "volumes_backup" \
-    $volumes_arg_list \
+    ${volumes_arg_list[@]} \
     -v "$(realpath ~/.config/rclone/rclone.conf):/root/.config/rclone/rclone.conf:ro" \
     -v "$(realpath ~/.config/.secrets/settings.conf):/settings.conf:ro" \
     alpine:latest /bin/ash -e -c "
@@ -400,7 +441,7 @@ do_data_restore() {
     folders_list=$(split_by_comma "$host_backup_folders") || return 1
 
     for folder in ${folder_list[@]}; do
-      # TODO
+      mv -v "$restore_folder_path/$folder" "/home/$remote_user/host-restore/$folder"
     done
   fi
 
