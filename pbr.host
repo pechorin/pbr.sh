@@ -59,8 +59,16 @@ check_host() {
 }
 
 load_config() {
-  secrets_file=${SECRETS_FILE:-~/.config/.secrets/settings.conf}
-  source $secrets_file
+  if [ -n "$1" ] && [ -f "$1" ]; then
+    secrets_file="$1"
+  else
+    secrets_file=${SECRETS_FILE:-~/.config/.secrets/settings.conf}
+  fi
+
+  source $secrets_file || {
+    echo_err "Can't load secrets file"
+    exit 1
+  }
 }
 
 # Remove all created working files on script exit
@@ -146,7 +154,7 @@ split_by_comma() {
 
     # if still found any space then abort script
     if [[ "$volume_name" =~ " " ]]; then
-      echo_err "Names with spaces are forbidden, not sorry here"
+      echo_err "Names with spaces are forbidden"
       return 1
     fi
 
@@ -368,29 +376,45 @@ do_data_backup() {
     mounted_dir_list+=(${tmp_list[@]})
   fi
 
-  # Bakcup command will run in container:
-  backup_command="restic -v --password-file=<(echo \$backup_storage_password) \
-                            --host=\$backup_name \
-                            --repo=\$data_rclone_repo backup ${mounted_dir_list[@]}"
+  # if only host folders backup needed then do not create container for backups
+  # this is mainly for perfomance on osx hosts backups
+  if [ -n "$host_backup_folders" ] && [ -z "$docker_backup_volumes" ]; then
+    echo "running host-only folders backup"
+    local host_folders
+    host_folders=$(split_by_comma "$host_backup_folders") || return 1
 
-  # Run backup inside container
-  # - mount backup volumes
-  # - mount rclone config
-  # - mount backup settings
-  # - run backup inside alpine container, but use bash instead of ash internally
-  #   because we need bash process substituion <() for safety providing password to processes
-  backup_log=$(docker run --rm --name "volumes_backup" \
-    ${volumes_arg_list[@]} \
-    -v "$(realpath ~/.config/rclone/rclone.conf):/root/.config/rclone/rclone.conf:ro" \
-    -v "$(realpath ~/.config/.secrets/settings.conf):/settings.conf:ro" \
-    alpine:latest /bin/ash -e -c "
-      apk update && apk add rclone restic bash
-      source ./settings.conf
-      bash -c \"$backup_command\"
-  ") || {
-    echo_err "docker volumes backup failed: $backup_log"
-    return 1
-  }
+    echo "backup args -> $restic_backup_args"
+
+    backup_log=$(restic -v --password-file=<(echo $backup_storage_password) $restic_backup_args \
+                           --host=$backup_name \
+                           --repo=$data_rclone_repo backup ${host_folders[@]})
+  else
+    echo "running docker backup"
+    # otherwise:
+    # Bakcup command will run in container:
+    backup_command="restic -v --password-file=<(echo \$backup_storage_password) $restic_backup_args \
+                              --host=\$backup_name \
+                              --repo=\$data_rclone_repo backup ${mounted_dir_list[@]}"
+
+    # Run backup inside container
+    # - mount backup volumes
+    # - mount rclone config
+    # - mount backup settings
+    # - run backup inside alpine container, but use bash instead of ash internally
+    #   because we need bash process substituion <() for safety providing password to processes
+    backup_log=$(docker run --rm --name "volumes_backup" \
+      ${volumes_arg_list[@]} \
+      -v "$(realpath ~/.config/rclone/rclone.conf):/root/.config/rclone/rclone.conf:ro" \
+      -v "$(realpath "$secrets_file"):/settings.conf:ro" \
+      frolvlad/alpine-bash bash -e -c "
+        apk update && apk add rclone restic
+        source /settings.conf
+        $backup_command
+    ") || {
+      echo_err "docker volumes backup failed: $backup_log"
+      return 1
+    }
+  fi
 
   # Log to stdout
   printf "$backup_log\n"
@@ -434,13 +458,12 @@ do_data_restore() {
     restore_log=$(docker run --rm --name "restore" \
       ${volumes_arg_list[@]} \
       -v "$restore_folder_path:/restore/" \
-      alpine:latest /bin/ash -e -c "
-        apk add bash && bash -e -c '
-          rm -rf ${mounted_dir_list_with_glob[@]}
-          for v in ${volumes_list[@]}; do
-            cp -r /restore/\${v}/* /\${v}/
-          done
-        '
+      frolvlad:alpine-bash bash -e -c "
+        apk add bash
+        rm -rf ${mounted_dir_list_with_glob[@]}
+        for v in ${volumes_list[@]}; do
+          cp -r /restore/\${v}/* /\${v}/
+        done
     ") || {
       echo_err "docker volumes restore failed: $restore_log"
       return 1
@@ -608,7 +631,7 @@ run() {
 echo "Running pbr.sh (on host machine)"
 
 check_host
-load_config
+load_config "$2"
 
 echo "at $ssh_connection_string"
 

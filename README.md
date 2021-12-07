@@ -28,13 +28,13 @@
 ## Usage
 
 ```
-# pbr.sh — provise & backup & restore cycle for small hosts
-
 >
 > pbr.local — local machine pbr.sh
 >
 
-Usage: $0 {provise|init-secrets|host-backup|host-restore|help}
+Usage: (inside script dir)
+
+   ./pbr.local {provise|init-secrets|host-backup|host-restore|help}
 
 1) Create secrets folder in project directory
 
@@ -57,6 +57,7 @@ Usage: $0 {provise|init-secrets|host-backup|host-restore|help}
 Other commands:
 
    pbr.local help                - display help message
+   
 ```
 
 

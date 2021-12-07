@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 
 # TODO:
+# - args for folder/settings file is confusing
+# - add cold restore
+# - ability to backup host folders to sepate repo? (and strictly without docker?)
+# - add configurable restrart for services after provide?
 # - add local restore
 # - check for miss-host (add host-file identificator)
 
@@ -186,9 +190,6 @@ provise() {
   echo $remote_user_password | \
     ssh $ssh_connection_string 'cat > remote_user_password && chmod 400 remote_user_password'
 
-  # Mark machine as host via special file
-  ssh -l $remote_user $ssh_connection_string 'touch .pbr-host'
-
   # Construct docker daemon configuration with user namespace remapping enabled
   # If no daemon.json file stored in secrets folder
   if ! [ -r "$secrets_dir/daemon.json" ]; then
@@ -217,7 +218,11 @@ provise() {
     #   username:1000:1
     #
     # after what we will swap lines order, so 1000:1 will be first
-    if useradd -m -U $remote_user; then
+    useradd -m -U $remote_user || echo "user already created"
+
+    uids_mapping=\$(cat /etc/subuid)
+    if ! [[ "$uids_mapping" =~ ^$remote_user:1000:1 ]]; then
+      # user namespace remapping for containers
       usermod -v 1000-1000 -w 1000-1000 $remote_user
 
       tac /etc/subuid > ./temp_subuid
@@ -240,6 +245,9 @@ provise() {
 
     # Generate keys pair on host machine
     su $remote_user -c "ssh-keygen -P \$(cat ./remote_user_password) -f ~/.ssh/id_rsa"
+
+    # Mark host machine
+    su $remote_user -c "touch ~/.pbr-host && chmod 400 ~/.pbr-host"
 
     # Add local public key to host user authorized keys
     cat $(basename "$local_public_key_path") > /home/$remote_user/.ssh/authorized_keys
@@ -278,7 +286,7 @@ provise() {
 
     # Restart out services so new upload configs will be enabled
     service sshd restart
-    service docker restart
+    # service docker restart
 STR
 }
 
@@ -307,23 +315,6 @@ init_config() {
 echo_ok "Running pbr.sh (on local machine)"
 
 if [ "$1" = "provise" ]; then
-  current_action="provise"
-elif [ "$1" = "init-secrets" ]; then
-  current_action="init-secrets"
-elif [ "$1" = "host-backup" ]; then
-  current_action="host-backup"
-elif [ "$1" = "host-restore" ]; then
-  current_action="host-restore"
-elif [ "$1" = "help" ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
-  current_action="help"
-else
-  # TODO: add usage
-  echo_err "action not provided: pbr.local provise\n"
-  show_help
-  exit 1
-fi
-
-if [ "$current_action" = "provise" ]; then
   echo_warn "Checking configuration"
 
   check_local_setup "$2"
@@ -333,14 +324,18 @@ if [ "$current_action" = "provise" ]; then
   echo_ok "Checking complete"
 
   provise
-elif  [ "$current_action" = "init-secrets" ]; then
+elif [ "$1" = "init-secrets" ]; then
   init_config "$2"
-elif  [ "$current_action" = "host-backup" ]; then
+elif [ "$1" = "host-backup" ]; then
   check_local_setup "$2"
   do_host_backup
-elif  [ "$current_action" = "host-restore" ]; then
+elif [ "$1" = "host-restore" ]; then
   check_local_setup "$2"
   do_host_restore
-elif  [ "$current_action" = "help" ]; then
+elif [ "$1" = "help" ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
   show_help
+else
+  echo_err "action not provided: pbr.local provise\n"
+  show_help
+  exit 1
 fi
