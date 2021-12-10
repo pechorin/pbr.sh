@@ -1,22 +1,5 @@
 #!/usr/bin/env bash
 
-# TODO:
-# - args for folder/settings file is confusing
-# - add cold restore
-# - ability to backup host folders to sepate repo? (and strictly without docker?)
-# - add configurable restrart for services after provide?
-# - add local restore
-# - check for miss-host (add host-file identificator)
-
-# TODO_MAYBE_V0.2:
-# - multiple backup repositories for each target
-# - ability to provie custom uid/guid for backup containers?
-# - configurable callbacks functions
-# - email notifications
-# - restore snapshot name in notifications
-# - restory data only flag (just download from cloud, do not do restore)
-# - option to disable root login after setup
-
 show_help() {
     echo "# pbr.sh — provise & backup & restore cycle for small hosts"
     echo "> pbr.local — local machine pbr.sh"
@@ -69,19 +52,25 @@ check_local_setup() {
   script_dir=$(dirname $0)
   script_dir=$(realpath "$script_dir")
 
-  [ -d "$1" ] || {
+  [ -n "$1" ] || {
     show_help
     fatal_err "provide secrets directory with second argument in pbr.local"
   }
 
-  secrets_dir=$(realpath "$1")
-  config_path="$secrets_dir/settings.conf"
+  secrets_arg=$(realpath "$1")
 
-  # Check secrets directory
-  [ -d "$secrets_dir" ] || fatal_err "$secrets_dir directory not found"
-
-  # Check and load configuration file
-  [ -r "$config_path" ] || fatal_err "Config file missing at path: $config_path"
+  # if path provided then use default settings file name
+  if [ -d "$secrets_arg" ]; then
+    secrets_dir="$secrets_arg"
+    config_path="$secrets_dir/settings.conf"
+  # otherwise, if config file provided use this file
+  elif [ -r "$secrets_arg" ]; then
+    secrets_dir=$(dirname "$secrets_arg")
+    secrets_dir=$(realpath "$secrets_dir")
+    config_path="$secrets_arg"
+  else
+    fatal_err "$1 not a secrets directory nor secrets settings file"
+  fi
 
   source "$config_path"
 
