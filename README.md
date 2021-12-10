@@ -1,6 +1,20 @@
 # pbr.sh — provise & backup & restore cycle for small hosts
 ## Utility for server provisioning and backuping with easy cmd interface
 
+Modern devops stack are cool and big, but what if we have only bash? This is a little developer attempt to automate provisioning, backup and restore for small hosts machine (running ubuntu) with docker, postgresql and mysql. This tool suitable for docker volumes backup (and host folders too). Also pbr.sh can be used for localhost forlders backup. Plain but latest bash version required.
+
+## On Docker containers safety
+
+pbr.sh trys to change user mapping to get result kind of:
+
+```bash
+~ cat /etc/subuid
+username:1000:1
+username:100000:65536
+```
+
+Please read official docker documentation about user namespace remapping https://docs.docker.com/engine/security/userns-remap/
+
 ### Features
 - Fast bootstraping of ubuntu servers ready for Docker (with one command + config file)
 - Linux users namespace remapping for docker users enabled by default
