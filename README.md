@@ -3,6 +3,8 @@
 
 Modern devops stack are cool and big, but what if we have only bash? This is a little developer attempt to automate provisioning, backup and restore for small hosts machine (running ubuntu) with docker, postgresql and mysql. This tool suitable for docker volumes backup (and host folders too). Also pbr.sh can be used for localhost forlders backup. Latest bash version required.
 
+This is experimental toolset and used currently only on my home projects. Please be carefully, this is not an alpha either.
+
 ## On Docker containers safety
 
 pbr.sh trys to change host (not local) linux user namespace mapping to get result kind of:
