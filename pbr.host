@@ -59,8 +59,20 @@ check_host() {
 }
 
 load_config() {
-  if [ -n "$1" ] && [ -f "$1" ]; then
-    secrets_file="$1"
+  if [ -n "$1" ]; then
+    if [ -f "$1" ]; then
+      secrets_file="$1"
+    elif [ -d "$1" ]; then
+      if [ -f "$1/settings.conf" ]; then
+        secrets_file="$1/settings.conf"
+      else
+        echo_err "Can't find settings.conf file in secrets directory"
+        exit 1
+      fi
+    else
+      echo_err "Can't access $1"
+      exit 1
+    fi
   else
     secrets_file=${SECRETS_FILE:-~/.config/.secrets/settings.conf}
   fi

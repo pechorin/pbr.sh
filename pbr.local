@@ -192,6 +192,13 @@ provise() {
     set -e
     set -o pipefail
 
+    source secrets/$(basename "$config_path")
+
+    should_create_user=${provise_create_user:-'true'}
+    should_recreate_ssh_key=${provise_recreate_ssh_key:-'false'}
+    should_host_docker_nsremap=${provise_host_docker_nsremap:-'true'}
+    should_restart_services=${provise_restart_services:-'false'}
+
     # Update distro and setup required toolset
     apt-get update
     apt-get --yes --force-yes upgrade
@@ -207,33 +214,39 @@ provise() {
     #   username:1000:1
     #
     # after what we will swap lines order, so 1000:1 will be first
-    useradd -m -U $remote_user || echo "user already created"
+    if [ \$should_create_user = 'true' ]; then
+      useradd -m -U $remote_user || echo "user already created"
 
-    uids_mapping=\$(cat /etc/subuid)
-    if ! [[ "$uids_mapping" =~ ^$remote_user:1000:1 ]]; then
-      # user namespace remapping for containers
-      usermod -v 1000-1000 -w 1000-1000 $remote_user
-
-      tac /etc/subuid > ./temp_subuid
-      cat ./temp_subuid > /etc/subuid
-
-      tac /etc/subgid > ./temp_subgid
-      cat ./temp_subgid > /etc/subgid
-
-      rm -f ./temp_subuid ./temp_subgid
+      # Get password hash and set it
+      # also add our user to docker group
+      hashed_password=\$(openssl passwd -6 \$(cat ./remote_user_password))
+      usermod -a -G docker -p \$hashed_password -s /bin/bash $remote_user
     fi
 
-    # Get password hash and set it
-    # also add our user to docker group
-    hashed_password=\$(openssl passwd -6 \$(cat ./remote_user_password))
-    usermod -a -G docker -p \$hashed_password -s /bin/bash $remote_user
+    if [ \$should_host_docker_nsremap = 'true' ]; then
+      uids_mapping=\$(cat /etc/subuid)
+      if ! [[ "$uids_mapping" =~ ^$remote_user:1000:1 ]]; then
+        # user namespace remapping for containers
+        usermod -v 1000-1000 -w 1000-1000 $remote_user
 
-    # Remove previously added configs
-    rm -rf /home/$remote_user/.ssh
-    rm -rf /home/$remote_user/.config
+        tac /etc/subuid > ./temp_subuid
+        cat ./temp_subuid > /etc/subuid
 
-    # Generate keys pair on host machine
-    su $remote_user -c "ssh-keygen -P \$(cat ./remote_user_password) -f ~/.ssh/id_rsa"
+        tac /etc/subgid > ./temp_subgid
+        cat ./temp_subgid > /etc/subgid
+
+        rm -f ./temp_subuid ./temp_subgid
+      fi
+    fi
+
+    if [ \$should_recreate_ssh_key = 'true' ] || ! [ -f /home/$remote_user/.ssh/id_rsa.pub ]; then
+      # Remove previously added configs
+      rm -rf /home/$remote_user/.ssh
+      rm -rf /home/$remote_user/.config
+
+      # Generate keys pair on host machine
+      su $remote_user -c "ssh-keygen -P \$(cat ./remote_user_password) -f ~/.ssh/id_rsa"
+    fi
 
     # Mark host machine
     su $remote_user -c "touch ~/.pbr-host && chmod 400 ~/.pbr-host"
@@ -274,8 +287,11 @@ provise() {
     crontab -u $remote_user cronfile; rm -f cronfile
 
     # Restart out services so new upload configs will be enabled
-    service sshd restart
-    # service docker restart
+    [ \"\$should_restart_services\" = 'true' ] && {
+      echo 'Restarting services'
+      service sshd restart
+      service docker restart
+    }
 STR
 }
 
@@ -283,8 +299,16 @@ init_config() {
   [ -z "$1" ] && fatal_err "secrets path not provided via argument"
   [ -d "$1" ] || fatal_err "provided path not a directory: $1"
 
+  local secrets_folder_name
+
+  if [ -n "$2" ]; then
+    secrets_folder_name="$2"
+  else
+    secrets_folder_name="pbr.secrets"
+  fi
+
   script_dir=$(dirname $0)
-  possible_path="$(realpath "$1")/pbr.secrets"
+  possible_path="$(realpath "$1")/$secrets_folder_name"
   proto_path="${script_dir}/pbr.secrets.example"
 
   [ -d "$possible_path" ] && \
@@ -314,7 +338,7 @@ if [ "$1" = "provise" ]; then
 
   provise
 elif [ "$1" = "init-secrets" ]; then
-  init_config "$2"
+  init_config "$2" "$3"
 elif [ "$1" = "host-backup" ]; then
   check_local_setup "$2"
   do_host_backup
