@@ -194,6 +194,18 @@ provise() {
 
     source secrets/$(basename "$config_path")
 
+    # uploaded file for cleanup:
+    working_files=(remote_password $(basename $"local_public_key_path") daemon.json config/daemon.json)
+
+    finalize() {
+      for file in "\${working_files[@]}"; do
+        # echo "removing working file \$file"
+        rm -rf "\${file}"
+      done
+
+      working_files=()
+    }; trap finalize EXIT ERR
+
     should_create_user=${provise_create_user:-'true'}
     should_recreate_ssh_key=${provise_recreate_ssh_key:-'false'}
     should_host_docker_nsremap=${provise_host_docker_nsremap:-'true'}
@@ -242,7 +254,6 @@ provise() {
     if [ \$should_recreate_ssh_key = 'true' ] || ! [ -f /home/$remote_user/.ssh/id_rsa.pub ]; then
       # Remove previously added configs
       rm -rf /home/$remote_user/.ssh
-      rm -rf /home/$remote_user/.config
 
       # Generate keys pair on host machine
       su $remote_user -c "ssh-keygen -P \$(cat ./remote_user_password) -f ~/.ssh/id_rsa"
@@ -252,20 +263,20 @@ provise() {
     su $remote_user -c "touch ~/.pbr-host && chmod 400 ~/.pbr-host"
 
     # Add local public key to host user authorized keys
-    cat $(basename "$local_public_key_path") > /home/$remote_user/.ssh/authorized_keys
+    local_pkey=\$(cat $(basename "$local_public_key_path"))
+    current_authorized=\$(cat /home/$remote_user/.ssh/authorized_keys)
+
+    if ! [[ "$current_authorized" =~ $pkey ]]; then
+      cat $(basename "$local_public_key_path") >> /home/$remote_user/.ssh/authorized_keys
+    fi
 
     # Copy rclone config to host user configs
     su $remote_user -c 'mkdir -p ~/.config/rclone;'
     mv $(basename "$local_rclone_config_path") /home/$remote_user/.config/rclone/
 
-    # Set restiction access for .config folders
+    # Set restictive access to .config folders
     chmod -R 700 /home/$remote_user/.config
     chown -R $remote_user:$remote_user /home/$remote_user/.config
-
-    # Cleanup
-    rm -f remote_user_password \
-          $(basename "$local_public_key_path") \
-          $(basename "$local_rclone_config_path")
 
     # Move backup script to host user home dir
     chmod 500 ./pbr.host
@@ -283,15 +294,20 @@ provise() {
     mv ./.secrets/ /home/$remote_user/.config/
 
     # Set backup script execution via cron
-    echo "$host_backup_cron_time /home/$remote_user/pbr.host backup" > cronfile
-    crontab -u $remote_user cronfile; rm -f cronfile
+    current_cron=$(crontab -l)
+    if ! [[ "\$current_cron" =~ "pbr.host backup" ]]; then
+      echo \$current_cron > cronfile
+      echo "$host_backup_cron_time /home/$remote_user/pbr.host backup" >> cronfile
 
-    # Restart out services so new upload configs will be enabled
-    [ \"\$should_restart_services\" = 'true' ] && {
+      crontab -u $remote_user cronfile; rm -f cronfile
+    fi
+
+    # Restart services, so new uploaded configs will apply
+    if [ \"\$should_restart_services\" = 'true' ]; then
       echo 'Restarting services'
       service sshd restart
       service docker restart
-    }
+    fi
 STR
 }
 
