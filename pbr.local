@@ -200,7 +200,7 @@ provise() {
     finalize() {
       for file in "\${working_files[@]}"; do
         # echo "removing working file \$file"
-        rm -rf "\${file}"
+        rm -rf "\$file"
       done
 
       working_files=()
@@ -227,16 +227,17 @@ provise() {
     #
     # after what we will swap lines order, so 1000:1 will be first
     if [ \$should_create_user = 'true' ]; then
-      useradd -m -U $remote_user || echo "user already created"
-
-      # Get password hash and set it
-      # also add our user to docker group
-      hashed_password=\$(openssl passwd -6 \$(cat ./remote_user_password))
-      usermod -a -G docker -p \$hashed_password -s /bin/bash $remote_user
+      if useradd -m -U $remote_user; then
+        # Get password hash and set it
+        # also add our user to docker group
+        hashed_password=\$(openssl passwd -6 \$(cat ./remote_user_password))
+        usermod -a -G docker -p \$hashed_password -s /bin/bash $remote_user
+      fi
     fi
 
     if [ \$should_host_docker_nsremap = 'true' ]; then
       uids_mapping=\$(cat /etc/subuid)
+
       if ! [[ "$uids_mapping" =~ ^$remote_user:1000:1 ]]; then
         # user namespace remapping for containers
         usermod -v 1000-1000 -w 1000-1000 $remote_user
@@ -252,9 +253,6 @@ provise() {
     fi
 
     if [ \$should_recreate_ssh_key = 'true' ] || ! [ -f /home/$remote_user/.ssh/id_rsa.pub ]; then
-      # Remove previously added configs
-      rm -rf /home/$remote_user/.ssh
-
       # Generate keys pair on host machine
       su $remote_user -c "ssh-keygen -P \$(cat ./remote_user_password) -f ~/.ssh/id_rsa"
     fi

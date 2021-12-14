@@ -83,6 +83,14 @@ load_config() {
   }
 }
 
+setup_variables() {
+  if [ -z "$restoration_mode" ]; then
+    restoration_mode=${RESTORATION_MODE:-false}
+  fi
+
+  echo "Restoration mode enabled: $restoration_mode"
+}
+
 # Remove all created working files on script exit
 finalize() {
   # Remove files from host
@@ -132,6 +140,8 @@ notify_to_telegram() {
     \"parse_mode\": \"html\",
     \"disable_notification\": true
   }"
+
+  echo "$text"
 
   curl --silent --show-error --fail -X POST \
     -H 'Content-Type: application/json' \
@@ -510,7 +520,7 @@ do_data_restore() {
     fi
   else
     mkdir -p $HOME/pbr.restore/
-    mv "$restore_folder_path" "${HOME}/pbr.restore/data-restore-${snapshot_id}"
+    mv "$restore_folder_path" "$HOME/pbr.restore/data-restore-$snapshot_id"
   fi
 
   notify_to_telegram "$backup_name $snapshot_id data restore finished" "total size: ${restored_size[0]}"
@@ -627,9 +637,8 @@ do_db_restore() {
   else
     local host_restore_to="$HOME/pbr.restore/db-restore-$snapshot_id"
 
-    echo "TODO: not implemented"
-    return 1
-
+    mkdir -p $host_restore_to
+    mv $restore_folder_path/* $host_restore_to/
   fi
 
   notify_to_telegram "Restoring $backup_name db backup" "total size: ${restored_size[0]}"
@@ -670,6 +679,7 @@ echo "Running pbr.sh (on host machine)"
 
 check_host
 load_config "$2"
+setup_variables
 
 echo "at $ssh_connection_string"
 

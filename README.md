@@ -65,19 +65,15 @@ Root required only for setup (provisioning) phase, while this process regular us
 ## TODO
 
 ### road to 0.1
-- [ ] accept restoration mode from command line arg
-- [ ] rework forlders restore
-- [ ] add cold restore
-- [ ] ability to backup host folders to sepate repo? (and strictly without docker?)
-- [ ] and finalizer to pbr.local
+- [ ] is "provise" acceptable engilsh word?
 
 ### maybe V0.2:
 - multiple backup repositories for each target
 - ability to provie custom uid/guid for backup containers?
 - configurable callbacks functions
-- restory data only flag (just download from cloud, do not do restore)
 - option to disable root login after setup
 - configurable provise subscript
+- [ ] ability to backup host folders to sepate repo? (and strictly without docker?)
 
 ## Idea and concept
 
