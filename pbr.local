@@ -195,7 +195,7 @@ provise() {
     source secrets/$(basename "$config_path")
 
     # uploaded file for cleanup:
-    working_files=(remote_password $(basename $"local_public_key_path") daemon.json config/daemon.json)
+    working_files=(remote_password $(basename $"local_public_key_path"))
 
     finalize() {
       for file in "\${working_files[@]}"; do
@@ -294,7 +294,7 @@ provise() {
     mv ./.secrets/ /home/$remote_user/.config/
 
     # Set backup script execution via cron
-    current_cron=$(crontab -l)
+    current_cron=\$(crontab -l)
     if ! [[ "\$current_cron" =~ "pbr.host backup" ]]; then
       echo \$current_cron > cronfile
       echo "$host_backup_cron_time /home/$remote_user/pbr.host backup" >> cronfile

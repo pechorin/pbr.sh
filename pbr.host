@@ -465,37 +465,55 @@ do_data_restore() {
   restic --password-file=<(echo $backup_storage_password) -v --repo="$data_rclone_repo" restore \
            latest --target="$restore_folder_path" || return 1
 
-  if [ -n "$docker_backup_volumes" ]; then
-    # Mount restore folder and docker volumes in container, and then do restoration
-    restore_log=$(docker run --rm --name "restore" \
-      ${volumes_arg_list[@]} \
-      -v "$restore_folder_path:/restore/" \
-      frolvlad:alpine-bash bash -e -c "
-        apk add bash
-        rm -rf ${mounted_dir_list_with_glob[@]}
-        for v in ${volumes_list[@]}; do
-          cp -r /restore/\${v}/* /\${v}/
-        done
-    ") || {
-      echo_err "docker volumes restore failed: $restore_log"
-      return 1
-    }
-
-    # Log to stdout
-    printf "$restore_log\n"
-  fi
-
-  if [ -n "$host_backup_folders" ]; then
-    folders_list=$(split_by_comma "$host_backup_folders") || return 1
-
-    for folder in ${folder_list[@]}; do
-      mv -v "$restore_folder_path/$folder" "/home/$remote_user/host-restore/$folder"
-    done
-  fi
-
-  # Count restored size and remove restore folder
   restored_size=($(du -sh $restore_folder_path))
-  notify_to_telegram "Restoring $backup_name volumes backup" "total size: ${restored_size[0]}"
+
+  # Get snapshot id
+  restic_snapshot=$(restic --password-file=<(echo $backup_storage_password) -v --repo="$data_rclone_repo" snapshots -c --latest 1) || return 1
+  snapshot_id=$(echo "$restic_snapshot" | grep -E -e '^[a-z0-9]{8}' | cut -f 1 -d ' ') || {
+    echo_err "can't fetch snapshot id"
+    return 1
+  }
+
+  if [ "$restoration_mode" = 'true' ]; then
+    if [ -n "$docker_backup_volumes" ]; then
+      # Mount restore folder and docker volumes in container, and then do restoration
+      restore_log=$(docker run --rm --name "restore" \
+        ${volumes_arg_list[@]} \
+        -v "$restore_folder_path:/restore/" \
+        frolvlad:alpine-bash bash -e -c "
+          apk add bash
+          rm -rf ${mounted_dir_list_with_glob[@]}
+          for v in ${volumes_list[@]}; do
+            cp -r /restore/\${v}/* /\${v}/
+          done
+      ") || {
+        echo_err "docker volumes restore failed: $restore_log"
+        return 1
+      }
+
+      # Log to stdout
+      printf "$restore_log\n"
+    fi
+
+    if [ -n "$host_backup_folders" ]; then
+      local host_restore_to="$HOME/pbr.restore/host-folders-restore-$snapshot_id"
+
+      echo "Restoration host folders is not implemented, please do it by yourself"
+      echo "Processing regular restoring to $host_restore_to"
+
+      folders_list=$(split_by_comma "$host_backup_folders") || return 1
+
+      for folder in ${folder_list[@]}; do
+        mkdir -p "$host_restore_to"
+        mv -v "$restore_folder_path/$folder" "$host_restore_to/$folder"
+      done
+    fi
+  else
+    mkdir -p $HOME/pbr.restore/
+    mv "$restore_folder_path" "${HOME}/pbr.restore/data-restore-${snapshot_id}"
+  fi
+
+  notify_to_telegram "$backup_name $snapshot_id data restore finished" "total size: ${restored_size[0]}"
 
   return 0
 }
@@ -583,29 +601,37 @@ do_db_restore() {
   restic --password-file=<(echo $backup_storage_password) -v --repo="$db_rclone_repo" restore latest \
          --target="$restore_folder_path" || return 1
 
-
-  if [ -n "$docker_mysql_db_names" ]; then
-    mysql_id=$(get_mysql_container_id) || return 1
-    copy_mysql_credentials_to_container $mysql_id --restore || return 1
-
-    # Run restore
-    # also ensure what config file removed fron container
-    docker exec -i $mysql_id sh -c "mysql --defaults-extra-file=/${mysql_credentials_config_name}" \
-      < ${restore_folder_path}/${mysql_backup_file_name} || {
-        echo_err "mysql restore failed"
-        return 1
-    }
-  fi
-
-  if [ -n "$host_postgresql_db_names" ]; then
-    pg_databases=$(split_by_comma $host_postgresql_db_names) || return 1
-
-    for db in $pg_databases; do
-      psql $db < ${restore_folder_path}/host_postgresql_${db}_dump.sql
-    done
-  fi
-
   restored_size=($(du -sh $restore_folder_path))
+
+  if [ "$restoration_mode" = "true" ]; then
+    if [ -n "$docker_mysql_db_names" ]; then
+      mysql_id=$(get_mysql_container_id) || return 1
+      copy_mysql_credentials_to_container $mysql_id --restore || return 1
+
+      # Run restore
+      # also ensure what config file removed fron container
+      docker exec -i $mysql_id sh -c "mysql --defaults-extra-file=/${mysql_credentials_config_name}" \
+        < ${restore_folder_path}/${mysql_backup_file_name} || {
+          echo_err "mysql restore failed"
+          return 1
+      }
+    fi
+
+    if [ -n "$host_postgresql_db_names" ]; then
+      pg_databases=$(split_by_comma $host_postgresql_db_names) || return 1
+
+      for db in $pg_databases; do
+        psql $db < ${restore_folder_path}/host_postgresql_${db}_dump.sql
+      done
+    fi
+  else
+    local host_restore_to="$HOME/pbr.restore/db-restore-$snapshot_id"
+
+    echo "TODO: not implemented"
+    return 1
+
+  fi
+
   notify_to_telegram "Restoring $backup_name db backup" "total size: ${restored_size[0]}"
 }
 

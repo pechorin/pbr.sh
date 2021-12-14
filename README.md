@@ -58,13 +58,14 @@ Root required only for setup (provisioning) phase, while this process regular us
 - postgresql on host
 
 ## Notifications & reporting & loggin
-- telegram notify to telegran if configured (can be ommited)
+- notify to telegran if configured (can be ommited)
 - host logs stored in ./pbr_log.txt
 - [ ] via email
 
 ## TODO
 
 ### road to 0.1
+- [ ] accept restoration mode from command line arg
 - [ ] rework forlders restore
 - [ ] add cold restore
 - [ ] ability to backup host folders to sepate repo? (and strictly without docker?)
@@ -74,7 +75,6 @@ Root required only for setup (provisioning) phase, while this process regular us
 - multiple backup repositories for each target
 - ability to provie custom uid/guid for backup containers?
 - configurable callbacks functions
-- restore snapshot name in notifications
 - restory data only flag (just download from cloud, do not do restore)
 - option to disable root login after setup
 - configurable provise subscript
@@ -286,7 +286,7 @@ Examples:
   pbr.host help                          - display help message
 ```
 
-## Configuration
+## All configuration options
 
 This is full configuration example, but you can comment unnecessary features:
 
