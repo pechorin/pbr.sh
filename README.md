@@ -65,7 +65,7 @@ Root required only for setup (provisioning) phase, while this process regular us
 ## TODO
 
 ### road to 0.1
-- [ ] is "provise" acceptable engilsh word?
+- [ ] is "provise" acceptable engilsh word? rename to host-setup?
 
 ### maybe V0.2:
 - multiple backup repositories for each target

@@ -64,7 +64,7 @@ check_local_setup() {
     secrets_dir="$secrets_arg"
     config_path="$secrets_dir/settings.conf"
   # otherwise, if config file provided use this file
-  elif [ -r "$secrets_arg" ]; then
+  elif [ -f "$secrets_arg" ]; then
     secrets_dir=$(dirname "$secrets_arg")
     secrets_dir=$(realpath "$secrets_dir")
     config_path="$secrets_arg"
@@ -172,7 +172,7 @@ provise() {
       "$local_rclone_config_path" \
       "$ssh_connection_string:."
 
-  scp -r "$secrets_dir" "$ssh_connection_string:.secrets"
+  scp -r $secrets_dir/* $ssh_connection_string:.secrets/
 
   # Copy password via ssh to remote host
   # on remote host get password from stdin and write it to file with limited permissions
@@ -192,10 +192,11 @@ provise() {
     set -e
     set -o pipefail
 
-    source secrets/$(basename "$config_path")
+    ls -al
+    ls -al .secrets/
 
     # uploaded file for cleanup:
-    working_files=(remote_password $(basename $"local_public_key_path"))
+    working_files=(remote_user_password $(basename $local_public_key_path) daemon.json rclone.conf pbr.host sshd_config)
 
     finalize() {
       for file in "\${working_files[@]}"; do
@@ -205,6 +206,8 @@ provise() {
 
       working_files=()
     }; trap finalize EXIT ERR
+
+    source .secrets/$(basename $config_path)
 
     should_create_user=${provise_create_user:-'true'}
     should_recreate_ssh_key=${provise_recreate_ssh_key:-'false'}
@@ -264,8 +267,8 @@ provise() {
     local_pkey=\$(cat $(basename "$local_public_key_path"))
     current_authorized=\$(cat /home/$remote_user/.ssh/authorized_keys)
 
-    if ! [[ "$current_authorized" =~ $pkey ]]; then
-      cat $(basename "$local_public_key_path") >> /home/$remote_user/.ssh/authorized_keys
+    if ! [[ "\$current_authorized" =~ "\$local_pkey" ]]; then
+      echo \$local_pkey >> /home/$remote_user/.ssh/authorized_keys
     fi
 
     # Copy rclone config to host user configs
@@ -287,12 +290,14 @@ provise() {
     [ -f ./.secrets/daemon.json ] && mv ./.secrets/daemon.json /etc/docker/daemon.json
 
     # Move secrets to user home dir and set restrictive access
+    su $remote_user -c 'mkdir -p ~/.config/.secrets;'
     chmod -R 500 ./.secrets
     chown -R $remote_user:$remote_user ./.secrets
-    mv ./.secrets/ /home/$remote_user/.config/
+    mv ./.secrets/* /home/$remote_user/.config/.secrets/
+    working_files+=(./secrets)
 
     # Set backup script execution via cron
-    current_cron=\$(crontab -l)
+    current_cron=\$(crontab -l -u $remote_user)
     if ! [[ "\$current_cron" =~ "pbr.host backup" ]]; then
       echo \$current_cron > cronfile
       echo "$host_backup_cron_time /home/$remote_user/pbr.host backup" >> cronfile
@@ -306,6 +311,8 @@ provise() {
       service sshd restart
       service docker restart
     fi
+
+    echo "Setup complete"
 STR
 }
 
