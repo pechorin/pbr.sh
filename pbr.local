@@ -183,7 +183,7 @@ do_host_setup() {
   # Construct docker daemon configuration with user namespace remapping enabled
   # If no daemon.json file stored in secrets folder
   if ! [ -r "$secrets_dir/daemon.json" ]; then
-    daemon_config="{\"userns-remap\":\"${remote_user}\"}"
+    daemon_config="{\"userns-remap\":\"$remote_user\"}"
     echo $daemon_config | \
       ssh $ssh_connection_string 'cat > daemon.json'
   fi
@@ -218,15 +218,6 @@ do_host_setup() {
     apt-get --yes --force-yes install rclone restic docker.io neovim
 
     # Create our user on host machine:
-    # default uids mapping for linux namespaces will be kind of:
-    #
-    #   username:100000:65536
-    #
-    # we will map docker root to our host user via appending line
-    #
-    #   username:1000:1
-    #
-    # after what we will swap lines order, so 1000:1 will be first
     if [ \$should_create_user = 'true' ]; then
       if useradd -m -U $remote_user; then
         # Get password hash and set it
@@ -239,7 +230,18 @@ do_host_setup() {
     if [ \$should_host_docker_nsremap = 'true' ]; then
       uids_mapping=\$(cat /etc/subuid)
 
+      echo "remap userns"
+      # default uids mapping for ubuntu will be
+      #
+      #   username:100000:65536
+      #
+      # we will map docker root to our host user via appending line
+      #
+      #   username:1000:1
+      #
+      # after what we will swap lines order, so 1000:1 will be first
       if ! [[ "$uids_mapping" =~ ^$remote_user:1000:1 ]]; then
+      echo "remap userns A"
         # user namespace remapping for containers
         usermod -v 1000-1000 -w 1000-1000 $remote_user
 

@@ -1,13 +1,23 @@
-# pbr.sh — provisiong & backup & restore cycle for small hosts
-**Server maintance utility with easy command line interface in plain bash**
+## pbr.sh — provisiong & backup & restore cycle for small hosts
 
-Modern devops stack are cool and big, but what if we have only bash? This is a little developer attempt to automate provisioning, backup and restore for small hosts machine (running ubuntu) with docker, postgresql and mysql. This tool suitable for docker volumes backup (and host folders too). Also pbr.sh can be used for localhost forlders backup. Latest bash version required.
+_Learning experimental server maintance utility with easy command line interface in plain bash_
 
-**⚠️This is experimental toolset and used currently only on my pet home projects. Please be careful, this is not an alpha either.**
+**tldr: I kept the minimum number of dependencies and had a great time with shell and bash scripting :), i also complete automation process for my hosts and localhost, but i realized that  I should take a look at the high level solutions like ansible, because big abstractions in bash is as time really time consumptuion process. In my case this is reinventing the weel. But if you realy need to do this by yourself this work can be you strartint point in this research.**
 
-## On Docker containers safety
+Modern devops stack are cool and big, but what if we have only bash? This is a little developer attempt to automate provisioning, backup and restore for small hosts machine, running ubuntu with docker, postgresql and mysql. This tool suitable for docker volumes and host folders backup. Also pbr.sh can be used for localhost forlders backup. Latest bash version required.
 
-pbr.sh tries to change host (not local) linux user namespace mapping on each `provise` command run to get this kind of result:
+**⚠️This is experimental learning script, this is not an alpha either.**
+
+## General safety notes 
+- docker containers run with remaped user and group ids. host user id (1000) = docker root id (0);
+- all credentials stored in files with restrictive permissions
+  (only for specified user — `chmod 500`)
+- no credentials are present in command line args or env variables,
+  so where are no ability to see sensentive data in process tree
+
+## Docker containers safety notes
+
+`pbr.sh` tries to change remote host linux user namespace mapping on each `host-setup` command run to get this kind of result:
 
 ```bash
 ~ cat /etc/subuid
@@ -15,39 +25,38 @@ username:1000:1
 username:100000:65536
 ```
 
+via command:
+```bash
+usermod -v 1000-1000 -w 1000-1000 $remote_user
+```
+
 This mapping allows to map non-root host user uid (1000 in default ubuntu setup) to docker root uid (0). So root inside container cannot have root priviliges on host machine.
 
 - About linux user namespaces: https://man7.org/linux/man-pages/man7/user_namespaces.7.html.
 - Official docker documentation about user namespace mapping: https://docs.docker.com/engine/security/userns-remap/
 
-Security part:
+### Containers security overview links:
 - https://book.hacktricks.xyz/linux-unix/privilege-escalation/docker-breakout/docker-breakout-privilege-escalation
 - https://github.com/OWASP/CheatSheetSeries/blob/master/cheatsheets/Docker_Security_Cheat_Sheet.mdhttps://github.com/OWASP/CheatSheetSeries/blob/master/cheatsheets/Docker_Security_Cheat_Sheet.md
 
-## Features
-- Bootstraping (provisioning) ubuntu servers ready for Docker (with one command + config file)
+
+## Remote host setup features (provisioning)
+- Bootstraping (provisioning) ubuntu servers ready for Docker (with one command + config file) with `pbr.local host-setup` command
 - Linux users namespace remapping for docker users enabled by default (no host root inside docker containers)
 - Provisioning available only for ubuntu based hosts, for now
 - Auto backups and cron setup for docker volumes, host folders, host postgresql and docker mysql
-- Notifications to telegram
+- Notifications to telegram on success or failed execution
+- Logs stored in `pbr_log.txt`
 
-## Safety
-- docker containers run with remaped user and group ids. host user id (1000) = docker root id (0);
-  you should be
-- all credentials stored in files with restrictive permissions
-  (only for specified user — `chmod 500`)
-- no credentials are present in command line args or env variables,
-  so where are no ability to see sensentive data in process tree
-
-## Local requiremenets
+## Local host requiremenets
 - bash
 - [restic](https://restic.net)
 - configured [rclone](https://rclone.org) (~/.config/rclone/rclone.conf)
 - local public key (~/.ssh/id_rsa.pub)
 - remote host with ubuntu if you need remote backups
 
-## Host requirements
-- ubuntu server accessible via root ssh (keys should be already uploaded to server, only key based authentication allowed)
+## Remote host requirements
+Ubuntu server accessible via root ssh (keys should be already uploaded to server, only key based authentication allowed)
 
 Root required only for setup (provisioning) phase, while this process regular user will be created with no sudo required setup. All secrets files will have only user access (500).
 
@@ -57,19 +66,16 @@ Root required only for setup (provisioning) phase, while this process regular us
 - mysql in docker
 - postgresql on host
 
-## Notifications & reporting & loggin
+## Notifications & reporting & logging
 - notify to telegran if configured (can be ommited)
 - host logs stored in ./pbr_log.txt
 - [ ] via email
-
-## TODO
 
 ### maybe V0.2:
 - multiple backup repositories for each target
 - ability to provie custom uid/guid for backup containers?
 - configurable callbacks functions
 - option to disable root login after setup
-- configurable provise subscript
 - ability to backup host folders to sepate repo? (and strictly without docker?)
 
 ## Idea and concept
@@ -88,12 +94,14 @@ As for the last step in this workflow, you can try to accomplish restoring with 
 
 ### How backup script gets to the server
 
-`pbr.host` holds logic responsible for backup and restore mechanics. When `pbr.local provise` run `pbr.host` is uploaded to remote host machine and script run execution added to user cron via , result for host user looks like:
+`pbr.host` holds logic responsible for backup and restore mechanics. When `pbr.local host-setup` run `pbr.host` is uploaded to remote host machine and script run execution added to user cron, result for host user will looks like:
 
 ```
 crontab -l
 30 0 * * * /home/username/pbr.host backup
 ```
+
+In case of local git clone installation to local machine you get `pbr.host` script downloaded on your machine, so no `host-setup` should be run (and can be dangeroues), and you can use this script for local backups, but on this case you need to explicitly specify secrets folder (otherwise script will attempts to work in host-mode and lookup for secrets folder in preconfigured path — `~/.config/.secrets/settings.conf`)
 
 ### Backup script (remote)
 
@@ -159,6 +167,14 @@ Skipping db backup
 backup completed at Sun 12 Dec 2021 12:30:20 AM UTC
 ```
 
+Now you can add backup script with specified config to localhost cron, add this lines to via `crontab -e` command:
+
+```bash
+30 0 * * * /Users/username/pbr.sh/pbr.host backup /Users/username/my-local-backup
+```
+
+Crontab time can be configured via option `backup_cron_time="30 0 * * *"`
+
 ## Remote host backup example
 
 ```bash
@@ -201,16 +217,17 @@ This command will:
 
 - update package versions (via apt-get update and upgrade)
 - install docker, restic and rclone (via apt-get)
-- create user specified in `remote_user` config if none
-- upload all secrets to remote host from specified folder (in our example: `~/my-remtote-backup`)
+- create user specified in `remote_user` config (if `host_create_user=true`)
+- upload all secrets to remote host from specified folder (in our example: `~/my-remote-backup`)
 - upload sshd config with disabled password login to remote host
 - recreate keys in ~/.ssh if `host_recreate_ssh_key=true` enabled in config (false by default)
 - remap user namespace files `/etc/subuid` and `/etc/subgid/` (so username uid 1000 will equals root inside docker containers)
 - move all configuration secrets to home user folder and set restrictive permissions on this files (chmod 500 or 700 in most cases)
 - restart sshd and docker if `host_restart_services=true` option is setin config  (false by default)
 
+-----
 
-After success you can do backup:
+After `host-setup` success you can do perform `host-backup`:
 
 ```
 ~/pbr.sh/pbr.local host-backup ~/my-remote-backup
