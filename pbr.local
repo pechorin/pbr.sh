@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 
 show_help() {
-    echo "# pbr.sh — provise & backup & restore cycle for small hosts"
+    echo "# pbr.sh — provisiong & backup & restore cycle for small hosts"
+    echo
     echo "> pbr.local — local machine pbr.sh"
-    echo ""
-    echo "Usage: $0 {provise|init-secrets|host-backup|host-restore|help}"
+    echo
+    echo "Usage: $0 {init-secrets|host-setup|host-backup|host-restore|help}"
     echo
     echo "Usage example:"
     echo
@@ -16,7 +17,7 @@ show_help() {
     echo
     echo "2) Do configured remote host setup and provisiong"
     echo
-    echo "   pbr.local provise ./my-project/pbr.secrets/"
+    echo "   pbr.local host-setup ./my-project/pbr.secrets/"
     echo
     echo "3) Backup remote host"
     echo
@@ -159,7 +160,7 @@ do_host_restore() {
   ssh -l $remote_user $ssh_connection_string ./pbr.host restore
 }
 
-provise() {
+do_host_setup() {
   if [ -z "$remote_user_password" ]; then
     # Ask for remote user password if password not defined in config file
     read -s -p "Enter remote user password: " remote_user_password
@@ -192,9 +193,6 @@ provise() {
     set -e
     set -o pipefail
 
-    ls -al
-    ls -al .secrets/
-
     # uploaded file for cleanup:
     working_files=(remote_user_password $(basename $local_public_key_path) daemon.json rclone.conf pbr.host sshd_config)
 
@@ -209,10 +207,10 @@ provise() {
 
     source .secrets/$(basename $config_path)
 
-    should_create_user=${provise_create_user:-'true'}
-    should_recreate_ssh_key=${provise_recreate_ssh_key:-'false'}
-    should_host_docker_nsremap=${provise_host_docker_nsremap:-'true'}
-    should_restart_services=${provise_restart_services:-'false'}
+    should_create_user=${host_create_user:-'true'}
+    should_recreate_ssh_key=${host_recreate_ssh_key:-'false'}
+    should_host_docker_nsremap=${host_docker_nsremap:-'true'}
+    should_restart_services=${host_restart_services:-'false'}
 
     # Update distro and setup required toolset
     apt-get update
@@ -348,7 +346,7 @@ init_config() {
 # Execution part
 echo_ok "Running pbr.sh (on local machine)"
 
-if [ "$1" = "provise" ]; then
+if [ "$1" = "host-setup" ]; then
   echo_warn "Checking configuration"
 
   check_local_setup "$2"
@@ -357,7 +355,8 @@ if [ "$1" = "provise" ]; then
 
   echo_ok "Checking complete"
 
-  provise
+  do_host_setup
+
 elif [ "$1" = "init-secrets" ]; then
   init_config "$2" "$3"
 elif [ "$1" = "host-backup" ]; then
@@ -369,7 +368,7 @@ elif [ "$1" = "host-restore" ]; then
 elif [ "$1" = "help" ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
   show_help
 else
-  echo_err "action not provided: pbr.local provise\n"
+  echo_err "Action not provided via command line\n"
   show_help
   exit 1
 fi

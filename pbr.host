@@ -6,9 +6,10 @@ set -o pipefail
 umask o=rwx,go=
 
 show_help() {
-    echo "# pbr.sh — provise & backup & restore cycle for small hosts"
+    echo "# pbr.sh — provisioning & backup & restore cycle for small hosts"
+    echo
     echo "> pbr.host — host machine pbr.sh"
-    echo ""
+    echo
     echo "Usage: $0 {backup|restore|help}"
     echo
     echo "Examples:"
@@ -87,8 +88,6 @@ setup_variables() {
   if [ -z "$restoration_mode" ]; then
     restoration_mode=${RESTORATION_MODE:-false}
   fi
-
-  echo "Restoration mode enabled: $restoration_mode"
 }
 
 # Remove all created working files on script exit
@@ -664,6 +663,8 @@ run() {
   echo "Starting $current_action at $(date)"
 
   if [ "$current_action" = "restore" ]; then
+    echo "Restoration mode enabled: $restoration_mode"
+
     do_data_restore || return 1
     do_db_restore || return 1
   elif  [ "$current_action" = "backup" ]; then
