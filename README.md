@@ -1,12 +1,11 @@
-## pbr.sh — provisiong & backup & restore cycle for small hosts
+## pbr.sh — backup & restore for small ubuntu hosts (with remote setup and namespace remapping for docker);
 
-_Learning experimental server maintance utility with easy command line interface in plain bash_
+**⚠️This is just a learning research project and i think i'am accomplish my goals: i have a great time with shell and bash scripting and also i faced with many security problems in context of linux host and containers while trying to do this script really secured. Idea behind concept of this workflow is really about security and lazyness. But project is archived. Where are no support or developing of this.**
 
-**tldr: I kept the minimum number of dependencies and had a great time with shell and bash scripting :), i also complete automation process for my hosts and localhost, but i realized that  I should take a look at the high level solutions like ansible, because big abstractions in bash is as time really time consumptuion process. In my case this is reinventing the weel. But if you realy need to do this by yourself this work can be you strartint point in this research.**
-
-Modern devops stack are cool and big, but what if we have only bash? This is a little developer attempt to automate provisioning, backup and restore for small hosts machine, running ubuntu with docker, postgresql and mysql. This tool suitable for docker volumes and host folders backup. Also pbr.sh can be used for localhost forlders backup. Latest bash version required.
-
-**⚠️This is experimental learning script, this is not an alpha either.**
+- setup remote server for docker, but in safe way, so containers root don't have host root previliege level (read below about docker namespace remmaping)
+- do remote server backups (host folders, docker volumes, in-docker-mysql, in-host-postgresql)
+- do remote server restores (plain in-folder restore or driver specific restoration mode like "really restore mysql database")
+- do all work with bash, but provide high level of security, so there shouldn't be things like password in environment variables (only via restrictive secrets files)
 
 ## General safety notes 
 - docker containers run with remaped user and group ids. host user id (1000) = docker root id (0);
@@ -40,8 +39,8 @@ This mapping allows to map non-root host user uid (1000 in default ubuntu setup)
 - https://github.com/OWASP/CheatSheetSeries/blob/master/cheatsheets/Docker_Security_Cheat_Sheet.mdhttps://github.com/OWASP/CheatSheetSeries/blob/master/cheatsheets/Docker_Security_Cheat_Sheet.md
 
 
-## Remote host setup features (provisioning)
-- Bootstraping (provisioning) ubuntu servers ready for Docker (with one command + config file) with `pbr.local host-setup` command
+## Remote host setup for backup
+- Bootstraping backup for ubuntu servers ready for Docker (with one command + config file) with `pbr.local host-setup` command
 - Linux users namespace remapping for docker users enabled by default (no host root inside docker containers)
 - Provisioning available only for ubuntu based hosts, for now
 - Auto backups and cron setup for docker volumes, host folders, host postgresql and docker mysql
@@ -58,7 +57,7 @@ This mapping allows to map non-root host user uid (1000 in default ubuntu setup)
 ## Remote host requirements
 Ubuntu server accessible via root ssh (keys should be already uploaded to server, only key based authentication allowed)
 
-Root required only for setup (provisioning) phase, while this process regular user will be created with no sudo required setup. All secrets files will have only user access (500).
+Root required only for setup (`host-setup`) phase, while this process regular user will be created with no sudo required setup. All secrets files will have only user access (500).
 
 ## Supported backup targets
 - docker volumes
@@ -80,13 +79,22 @@ Root required only for setup (provisioning) phase, while this process regular us
 
 ## Idea and concept
 
-Your local machine is a controller for all operations, the scope of this script is small home projects with simple setups. Maybe if you work with some serious stuff, you should look at Ansible and other tools. In opposite to this caution main motivation of this script is to have a kind of strong fundament for not regular but painful operations like provisioning new hosts, backing it up and restoring data, also this script works well for local machines backup scenarios.
+bash is good for portability, I tried strict myself with simple bash language constructions and problem solution variants, the main point was readability and simplicity.
 
-bash is good for portability, but perhaps in future i should rewrite this program to a higher-level language, but for now this is regular bash language. I tried strict myself with simple bash language constructions and problem solution variants, the main point was readability and simplicity.
+Your local machine is a controller for all operations. `pbr.local` is our primary tool. 
 
-`pbr.local` is our base tool for most operations. When you run `pbr.local init-secrets ~/my-project` script will generate new secrets directory with configuration file. After you're done configuration and remote (or local) host pre-setup, you can proceed with server setup command `pbr.local host-setup ~/my-project/pbr.secrets/`. The second argument to `provise` sub-command is secrets directory path, so you can have many secrets directories for different remote hosts or setups.
+### Init config and using it
+When you run `pbr.local init-secrets ~/my-project` script will generate new secrets directory with configuration file. After you're done configuration and remote (or local) host pre-setup, you can proceed with server setup command `pbr.local host-setup ~/my-project/pbr.secrets/`. The second argument to `host-setup` sub-command is secrets directory path, so you can have many secrets directories for different remote hosts or setups.
 
-If server setup finished okay after `pbr.local host-setup <secrets-dir>` command, we can try to do first backup: `pbr.local host-backup <secrets-dir>`. You will find all backup logs at `~/pbr_log.txt`, also you will receive telegram notification if this was configured.
+### Runnig backup
+
+If server setup finished okay after `pbr.local host-setup <secrets-dir>` command, we can try to do our first backup: 
+
+```bash
+`pbr.local host-backup <secrets-dir>`
+```
+
+You will find all backup logs at `~/pbr_log.txt`, also you will receive telegram notification if this was configured.
 
 As for the last step in this workflow, you can try to accomplish restoring with `pbr.local host-restore <secrets-dir>`.
 
@@ -232,9 +240,6 @@ After `host-setup` success you can do perform `host-backup`:
 ```
 ~/pbr.sh/pbr.local host-backup ~/my-remote-backup
 ```
-
-
-TODO: add localhost crontab -l example
 
 ## Usage
 
